@@ -1,0 +1,23 @@
+services:
+  course:
+    build: .
+    ports:
+      - "8000:8000"
+    environment:
+      SPARK_LOCAL_IP: 127.0.0.1
+      SPARK_LOCAL_DIRS: /tmp/spark-path
+    read_only: true
+    tmpfs:
+      - /tmp:exec,size=1g
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    mem_limit: 3g
+    cpus: 2.0
+    pids_limit: 256
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/health')"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
