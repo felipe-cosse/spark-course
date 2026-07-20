@@ -3,20 +3,25 @@ import { python } from "@codemirror/lang-python";
 import {
   ArrowLeft,
   ArrowRight,
+  BookOpenCheck,
   Check,
   CheckCircle2,
   ChevronDown,
   Circle,
+  Eye,
+  EyeOff,
   FlaskConical,
   Lightbulb,
   ListChecks,
   LoaderCircle,
   Play,
   RotateCcw,
+  SkipForward,
   Terminal,
 } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { labFor } from "../data/labs";
+import { solutionFor } from "../data/solutions";
 import { executeSpark } from "../lib/api";
 import { extractBullets, extractSubsection, parseExercises } from "../lib/markdown";
 import type { CourseItem, LessonProgress, RunResult } from "../types";
@@ -35,6 +40,7 @@ interface ExerciseWorkspaceProps {
   onStep: (step: "explanation" | "example" | "terms" | "exercise") => void;
   onDraft: (kind: "codeDrafts" | "noteDrafts", key: string, value: string) => void;
   onExerciseDone: (exerciseId: string, done: boolean) => void;
+  onExerciseSkipped: (exerciseId: string, skipped: boolean) => void;
   onLabPassed: (labId: string) => void;
   onCompleteLesson: () => void;
   onNextLesson: () => void;
@@ -59,8 +65,9 @@ function criteriaFor(body: string, fallback: string, selfCheck: string[]): strin
   const bullets = [requirementSection, acceptanceSection]
     .flatMap((section) => [...section.matchAll(/^[-*]\s+(.+)$/gm)].map((match) => match[1].trim()));
   if (bullets.length) return bullets;
-  if (deliverable) return [deliverable.replace(/\s+/g, " ").trim()];
-  return [fallback, ...selfCheck.slice(0, 2)];
+  if (deliverable) return [deliverable.replace(/\s+/g, " ").trim(), ...selfCheck.slice(0, 2)];
+  if (selfCheck.length) return selfCheck;
+  return [`The answer fully addresses “${fallback}” and includes verifiable evidence.`];
 }
 
 export function ExerciseWorkspace({
@@ -72,6 +79,7 @@ export function ExerciseWorkspace({
   onStep,
   onDraft,
   onExerciseDone,
+  onExerciseSkipped,
   onLabPassed,
   onCompleteLesson,
   onNextLesson,
@@ -84,12 +92,17 @@ export function ExerciseWorkspace({
   const [result, setResult] = useState<RunResult | null>(null);
   const [running, setRunning] = useState(false);
   const [hintOpen, setHintOpen] = useState(false);
+  const [solutionOpen, setSolutionOpen] = useState(false);
+  const [selfReviewOpen, setSelfReviewOpen] = useState(false);
+  const [reviewChecks, setReviewChecks] = useState<Record<string, boolean[]>>({});
   const [requestError, setRequestError] = useState("");
 
   useEffect(() => {
     setSelectedIndex(0);
     setResult(null);
     setHintOpen(false);
+    setSolutionOpen(false);
+    setSelfReviewOpen(false);
   }, [item.id]);
 
   const selected = exercises[selectedIndex] ?? { number: 1, title: "Practice", body: item.exerciseMarkdown };
@@ -99,13 +112,75 @@ export function ExerciseWorkspace({
   const code = codeDrafts[draftKey] ?? lab?.starter ?? genericStarter;
   const notes = noteDrafts[exerciseId] ?? "";
   const done = progress.completedExerciseIds.includes(exerciseId);
+  const skipped = progress.skippedExerciseIds.includes(exerciseId);
   const labPassed = Boolean(lab && progress.passedLabIds.includes(lab.id));
   const selfCheck = extractBullets(item.exerciseMarkdown, "Self-check");
   const criteria = lab?.criteria ?? criteriaFor(selected.body, selected.title, selfCheck);
   const hint = extractSubsection(selected.body, "Hint") || "Return to the worked example. Start with a three-row fixture that includes one normal row, one boundary case, and one invalid row.";
-  const allDone = exercises.length > 0 && exercises.every((exercise) =>
-    progress.completedExerciseIds.includes(`${item.id}-exercise-${exercise.number}`),
-  );
+  const solution = solutionFor(item.sourcePath, selected.number);
+  const selectedChecks = reviewChecks[exerciseId] ?? criteria.map(() => false);
+  const allReviewChecksPassed = criteria.length > 0 && selectedChecks.every(Boolean);
+  const allResolved = exercises.length > 0 && exercises.every((exercise) => {
+    const id = `${item.id}-exercise-${exercise.number}`;
+    return progress.completedExerciseIds.includes(id) || progress.skippedExerciseIds.includes(id);
+  });
+
+  const selectExercise = (index: number) => {
+    setSelectedIndex(index);
+    setResult(null);
+    setHintOpen(false);
+    setSolutionOpen(false);
+    setSelfReviewOpen(false);
+    setRequestError("");
+  };
+
+  const advanceToNextUnresolved = () => {
+    const orderedIndexes = [
+      ...exercises.map((_, index) => index).slice(selectedIndex + 1),
+      ...exercises.map((_, index) => index).slice(0, selectedIndex),
+    ];
+    const nextIndex = orderedIndexes.find((index) => {
+      const id = `${item.id}-exercise-${exercises[index].number}`;
+      return !progress.completedExerciseIds.includes(id) && !progress.skippedExerciseIds.includes(id);
+    });
+    if (nextIndex !== undefined) {
+      selectExercise(nextIndex);
+      return;
+    }
+    onCompleteLesson();
+    if (hasNextLesson) onNextLesson();
+  };
+
+  const skipExercise = () => {
+    onExerciseSkipped(exerciseId, true);
+    advanceToNextUnresolved();
+  };
+
+  const checkAnswer = () => {
+    if (lab) {
+      void runCode("check");
+      return;
+    }
+    setSolutionOpen(true);
+    setSelfReviewOpen(true);
+    setFeedbackTab("tests");
+    setRequestError("");
+  };
+
+  const toggleReviewCriterion = (index: number) => {
+    setReviewChecks((current) => {
+      const checks = [...(current[exerciseId] ?? criteria.map(() => false))];
+      checks[index] = !checks[index];
+      return { ...current, [exerciseId]: checks };
+    });
+  };
+
+  const finishSelfReview = () => {
+    if (!allReviewChecksPassed) return;
+    onExerciseDone(exerciseId, true);
+    setSelfReviewOpen(false);
+    setFeedbackTab("tests");
+  };
 
   const runCode = async (mode: "run" | "check") => {
     setRunning(true);
@@ -129,7 +204,11 @@ export function ExerciseWorkspace({
     onDraft("codeDrafts", draftKey, lab?.starter ?? genericStarter);
     onDraft("noteDrafts", exerciseId, "");
     onExerciseDone(exerciseId, false);
+    onExerciseSkipped(exerciseId, false);
+    setReviewChecks((current) => ({ ...current, [exerciseId]: criteria.map(() => false) }));
     setResult(null);
+    setSolutionOpen(false);
+    setSelfReviewOpen(false);
     setRequestError("");
   };
 
@@ -152,13 +231,9 @@ export function ExerciseWorkspace({
                 aria-selected={selectedIndex === index}
                 className={selectedIndex === index ? "active" : ""}
                 key={id}
-                onClick={() => {
-                  setSelectedIndex(index);
-                  setResult(null);
-                  setHintOpen(false);
-                }}
+                onClick={() => selectExercise(index)}
               >
-                {complete ? <Check size={14} /> : <span>{exercise.number}</span>}
+                {complete ? <Check size={14} /> : progress.skippedExerciseIds.includes(id) ? <SkipForward size={14} /> : <span>{exercise.number}</span>}
                 Exercise {exercise.number}
               </button>
             );
@@ -172,6 +247,32 @@ export function ExerciseWorkspace({
             <MarkdownContent markdown={selected.body} />
           </div>
         </section>
+
+        <div className="answer-tools">
+          <button
+            className="secondary-button"
+            aria-expanded={solutionOpen}
+            aria-controls="reference-solution"
+            onClick={() => setSolutionOpen((open) => !open)}
+          >
+            {solutionOpen ? <EyeOff size={16} /> : <Eye size={16} />}
+            {solutionOpen ? "Hide solution" : "Show solution"}
+          </button>
+          <span>Try the exercise first, then compare your reasoning and evidence.</span>
+        </div>
+
+        {solutionOpen && (
+          <section className="solution-panel" id="reference-solution">
+            <div className="solution-heading">
+              <BookOpenCheck size={19} />
+              <div>
+                <h2>Reference solution</h2>
+                <p>One valid approach—not the only possible answer.</p>
+              </div>
+            </div>
+            <MarkdownContent markdown={solution} />
+          </section>
+        )}
 
         <section className="workspace-panel">
           <div className="workspace-toolbar">
@@ -207,28 +308,43 @@ export function ExerciseWorkspace({
               <button className="secondary-button" onClick={() => runCode("run")} disabled={running || runnerOnline !== true}>
                 {running ? <LoaderCircle className="spin" size={16} /> : <Play size={16} />} Run code
               </button>
-              {lab && (
-                <button className="primary-button" onClick={() => runCode("check")} disabled={running || runnerOnline !== true}>
-                  <FlaskConical size={16} /> Check answer
-                </button>
-              )}
+              <button className="primary-button" onClick={checkAnswer} disabled={running || Boolean(lab && runnerOnline !== true)}>
+                <FlaskConical size={16} /> Check answer
+              </button>
             </div>
             <button className="text-button" onClick={resetExercise}><RotateCcw size={15} /> Reset exercise</button>
           </div>
           {runnerOnline === false && (
-            <p className="runner-help">The lesson reader still works. Start the complete course with <code>make up</code> to run and check Spark code.</p>
+            <p className="runner-help">Spark execution is offline. Reference solutions and rubric reviews still work; start the complete course with <code>make up</code> to run code and use automatic lab tests.</p>
           )}
         </section>
 
         <section className="feedback-panel" aria-live="polite">
           <div className="feedback-tabs">
             <button className={feedbackTab === "output" ? "active" : ""} onClick={() => setFeedbackTab("output")}><Terminal size={15} /> Output</button>
-            <button className={feedbackTab === "tests" ? "active" : ""} onClick={() => setFeedbackTab("tests")}><FlaskConical size={15} /> Tests</button>
+            <button className={feedbackTab === "tests" ? "active" : ""} onClick={() => setFeedbackTab("tests")}><FlaskConical size={15} /> {lab ? "Tests" : "Review"}</button>
             <button className={feedbackTab === "plan" ? "active" : ""} onClick={() => setFeedbackTab("plan")}><ListChecks size={15} /> Plan</button>
           </div>
           <div className="feedback-body">
             {requestError ? <div className="error-message">{requestError}</div> : feedbackTab === "tests" ? (
-              result?.tests.length ? (
+              !lab && done ? (
+                <div className="review-passed"><CheckCircle2 size={18} /><div><strong>Self-review complete</strong><span>Your answer meets every stated criterion.</span></div></div>
+              ) : !lab && selfReviewOpen ? (
+                <div className="self-review">
+                  <p>Compare your work with the reference solution, then confirm each criterion with evidence from your answer.</p>
+                  <div className="review-checklist">
+                    {criteria.map((criterion, index) => (
+                      <label key={`${criterion}-${index}`}>
+                        <input type="checkbox" checked={Boolean(selectedChecks[index])} onChange={() => toggleReviewCriterion(index)} />
+                        <span>{criterion}</span>
+                      </label>
+                    ))}
+                  </div>
+                  <button className="primary-button" disabled={!allReviewChecksPassed} onClick={finishSelfReview}>
+                    <CheckCircle2 size={16} /> Confirm answer meets criteria
+                  </button>
+                </div>
+              ) : result?.tests.length ? (
                 <ul className="test-results">
                   {result.tests.map((test) => (
                     <li className={test.passed ? "passed" : "failed"} key={test.name}>
@@ -237,7 +353,7 @@ export function ExerciseWorkspace({
                     </li>
                   ))}
                 </ul>
-              ) : <p>{lab ? "Choose Check answer to run the task-specific tests." : "This is a self-reviewed task. Use the criteria and record evidence in Notebook notes."}</p>
+              ) : <p>{lab ? "Choose Check answer to run the task-specific tests." : "Choose Check answer to compare with the reference solution and complete the review checklist."}</p>
             ) : feedbackTab === "plan" ? (
               <pre>{result?.plan || "Run a DataFrame assigned to result to inspect its formatted physical plan."}</pre>
             ) : (
@@ -247,21 +363,25 @@ export function ExerciseWorkspace({
         </section>
 
         <footer className="lesson-footer exercise-footer">
-          <button
-            className={done ? "completed-button" : "secondary-button"}
-            onClick={() => onExerciseDone(exerciseId, !done)}
-            disabled={Boolean(lab && !labPassed)}
-          >
-            {done ? <Check size={16} /> : <Circle size={16} />}
-            {done ? "Exercise completed" : lab ? "Pass tests to complete" : "Mark exercise complete"}
-          </button>
-          {allDone && (
-            progress.completed ? (
-              <button className="primary-button" onClick={onNextLesson} disabled={!hasNextLesson}>Next lesson <ArrowRight size={16} /></button>
-            ) : (
-              <button className="primary-button" onClick={onCompleteLesson}>Complete lesson <ArrowRight size={16} /></button>
-            )
-          )}
+          <div className={`exercise-result ${done ? "is-complete" : skipped ? "is-skipped" : ""}`}>
+            {done ? <CheckCircle2 size={17} /> : skipped ? <SkipForward size={17} /> : <Circle size={17} />}
+            {done ? "Exercise completed" : skipped ? "Exercise skipped" : lab ? "Pass the tests or skip" : "Check your answer or skip"}
+          </div>
+          <div className="exercise-navigation">
+            {!done && !skipped && (
+              <button className="secondary-button" onClick={skipExercise}>Skip exercise <SkipForward size={16} /></button>
+            )}
+            {(done || skipped) && !allResolved && (
+              <button className="primary-button" onClick={advanceToNextUnresolved}>Next exercise <ArrowRight size={16} /></button>
+            )}
+            {allResolved && (
+              progress.completed ? (
+                <button className="primary-button" onClick={onNextLesson} disabled={!hasNextLesson}>Next lesson <ArrowRight size={16} /></button>
+              ) : (
+                <button className="primary-button" onClick={onCompleteLesson}>Complete lesson <ArrowRight size={16} /></button>
+              )
+            )}
+          </div>
         </footer>
       </main>
 
@@ -272,7 +392,7 @@ export function ExerciseWorkspace({
           <ul>
             {criteria.map((criterion, index) => (
               <li key={`${criterion}-${index}`}>
-                {done || (labPassed && result?.tests[index]?.passed) ? <CheckCircle2 size={16} /> : <Circle size={16} />}
+                {done || (labPassed && result?.tests[index]?.passed) ? <CheckCircle2 size={16} /> : skipped ? <SkipForward size={16} /> : <Circle size={16} />}
                 <span>{criterion}</span>
               </li>
             ))}

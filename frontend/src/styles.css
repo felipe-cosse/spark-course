@@ -268,6 +268,15 @@ button:focus-visible, a:focus-visible, textarea:focus-visible {
 .task-instructions .markdown { font-size: 15px; line-height: 1.62; }
 .task-instructions .markdown h3 { margin-top: 22px; font-size: 16px; }
 .task-instructions .markdown p { margin-bottom: 12px; }
+.answer-tools { display: flex; align-items: center; gap: 12px; margin: -4px 0 16px 48px; }
+.answer-tools > span { color: var(--muted); font-size: 12px; line-height: 1.4; }
+.solution-panel { margin: 0 0 18px; padding: 20px 22px 4px; border: 1px solid #bcd3f5; border-radius: 8px; background: #f8fbff; }
+.solution-heading { display: flex; align-items: flex-start; gap: 10px; margin-bottom: 18px; padding-bottom: 15px; border-bottom: 1px solid #d9e7fa; color: var(--blue); }
+.solution-heading h2 { margin: 0 0 3px; color: var(--ink); font-size: 18px; letter-spacing: -0.01em; }
+.solution-heading p { margin: 0; color: var(--secondary); font-size: 12px; }
+.solution-panel > .markdown { font-size: 14px; line-height: 1.6; }
+.solution-panel > .markdown h3 { margin: 24px 0 9px; font-size: 16px; }
+.solution-panel > .markdown p, .solution-panel > .markdown ul, .solution-panel > .markdown ol { margin-bottom: 14px; }
 
 .workspace-panel, .feedback-panel { overflow: hidden; border: 1px solid var(--border); border-radius: 8px; background: #fff; }
 .workspace-toolbar { min-height: 47px; display: flex; align-items: center; justify-content: space-between; padding: 6px 10px; border-bottom: 1px solid var(--border); background: var(--surface); }
@@ -302,8 +311,21 @@ button:focus-visible, a:focus-visible, textarea:focus-visible {
 .test-results strong, .test-results span { display: block; }
 .test-results strong { margin-bottom: 2px; color: var(--ink); font-size: 12px; }
 .test-results span { color: var(--secondary); font-size: 12px; line-height: 1.4; }
+.self-review > p { margin: 0 0 13px; line-height: 1.5; }
+.review-checklist { display: grid; gap: 8px; margin-bottom: 15px; }
+.review-checklist label { display: grid; grid-template-columns: 17px 1fr; align-items: start; gap: 8px; padding: 8px 10px; border: 1px solid var(--rule); border-radius: 5px; background: var(--surface); cursor: pointer; line-height: 1.45; }
+.review-checklist input { width: 15px; height: 15px; margin: 2px 0 0; accent-color: var(--blue); }
+.review-passed { display: grid; grid-template-columns: 20px 1fr; gap: 8px; color: var(--success); }
+.review-passed strong, .review-passed span { display: block; }
+.review-passed strong { margin-bottom: 2px; color: var(--ink); }
+.review-passed span { color: var(--secondary); font-size: 12px; }
 .error-message { padding: 10px 12px; border: 1px solid #efc1bc; border-radius: 5px; color: var(--failure); background: var(--failure-soft); line-height: 1.5; }
 .exercise-footer { margin-top: 32px; }
+.exercise-result, .exercise-navigation { display: flex; align-items: center; gap: 8px; }
+.exercise-result { color: var(--secondary); font-size: 13px; font-weight: 650; }
+.exercise-result.is-complete { color: var(--success); }
+.exercise-result.is-skipped { color: var(--warning); }
+.exercise-navigation { justify-content: flex-end; }
 
 .criteria-panel { margin-top: 24px; padding-bottom: 22px; border-bottom: 1px solid var(--rule); }
 .criteria-panel ul { display: grid; gap: 14px; margin: 16px 0 0; padding: 0; list-style: none; }
@@ -361,6 +383,11 @@ button:focus-visible, a:focus-visible, textarea:focus-visible {
   .workspace-actions > div button { flex: 1; }
   .task-instructions { grid-template-columns: 1fr; }
   .task-number { margin-bottom: -4px; }
+  .answer-tools { align-items: stretch; flex-direction: column; margin-left: 0; }
+  .answer-tools .secondary-button { width: 100%; }
+  .exercise-navigation { align-items: stretch; flex-direction: column; width: 100%; }
+  .exercise-navigation button { width: 100%; }
+  .exercise-result { justify-content: center; }
   .markdown table { display: block; overflow-x: auto; }
   .autosave-state { display: none; }
 }

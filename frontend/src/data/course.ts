@@ -1,4 +1,6 @@
 import type { CourseItem, CoursePhase } from "../types";
+import { parseExercises } from "../lib/markdown";
+import { hasSolution } from "./solutions";
 
 const rawMarkdownModules = import.meta.glob("../../../docs/**/*.md", {
   query: "?raw",
@@ -100,6 +102,12 @@ export const courseItems: CourseItem[] = sourcePaths.map((sourcePath, index) => 
   const exerciseMarkdown = markdownModules[companion];
   if (!lessonMarkdown || !exerciseMarkdown) {
     throw new Error(`Missing Markdown content for ${sourcePath} or ${companion}`);
+  }
+  const missingSolutions = parseExercises(exerciseMarkdown)
+    .filter((exercise) => !hasSolution(sourcePath, exercise.number))
+    .map((exercise) => exercise.number);
+  if (missingSolutions.length) {
+    throw new Error(`Missing reference solutions for ${sourcePath}: ${missingSolutions.join(", ")}`);
   }
   return {
     id: idFor(sourcePath),

@@ -27,6 +27,7 @@ export interface LessonProgress {
   visitedSteps: LearningStep[];
   exerciseUnlocked: boolean;
   completedExerciseIds: string[];
+  skippedExerciseIds: string[];
   passedLabIds: string[];
   completed: boolean;
 }

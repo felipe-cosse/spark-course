@@ -85,6 +85,7 @@ export default function App() {
             onStep={selectStep}
             onDraft={progress.setDraft}
             onExerciseDone={(id, done) => progress.setExerciseDone(item.id, id, done)}
+            onExerciseSkipped={(id, skipped) => progress.setExerciseSkipped(item.id, id, skipped)}
             onLabPassed={(labId) => progress.passLab(item.id, labId)}
             onCompleteLesson={completeLesson}
             onNextLesson={() => selectLesson(Math.min(currentIndex + 1, courseItems.length - 1))}

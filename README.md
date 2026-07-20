@@ -45,6 +45,7 @@ The repository currently contains:
 
 - **34** ordered course and reference pages;
 - **124** numbered exercises;
+- **124** reference solutions with learner-controlled reveal;
 - **9** fixture-based, automatically graded PySpark labs;
 - batch, streaming, operational, and capstone assignments;
 - a definition table on every course page.
@@ -68,7 +69,9 @@ The exercise workspace provides:
 - stdout and bounded DataFrame previews;
 - formatted Spark physical plans;
 - exercise-specific tests where an automatic grader is available;
-- acceptance criteria, hints, progress tracking, and browser-local draft persistence.
+- guided rubric checks for open-ended engineering and workplace tasks;
+- reference solutions that learners can reveal after attempting a task;
+- separate completed/skipped progress, forward navigation, hints, and browser-local draft persistence.
 
 <p align="center">
   <img src="design/screenshots/exercise-output.png" alt="Spark Path exercise editor with PySpark output and completion criteria" width="100%">
@@ -141,6 +144,7 @@ spark-course/
 │   └── labs.py            Fixtures and deterministic graders
 ├── docs/
 │   ├── exercises/         Companion exercise page for every lesson
+│   ├── solutions/         Reference approaches for every numbered exercise
 │   └── reference/         Glossary, cheat sheet, sources, troubleshooting
 ├── design/                Design specification, concepts, and screenshots
 ├── compose.yaml           Restricted local runtime configuration
@@ -200,9 +204,10 @@ Course content lives under `docs/` and can be reviewed without running the appli
 2. Include a `Key terms on this page` section with definitions.
 3. Create its companion file under the matching `docs/exercises/` directory.
 4. Add numbered exercises, deliverables or requirements, hints, and self-check questions.
-5. Register the lesson in `frontend/src/data/course.ts` to preserve the intended learning order.
-6. Add a grader in `backend/labs.py` and metadata in `frontend/src/data/labs.ts` only when deterministic automatic checking is appropriate.
-7. Run `make check` before opening a pull request.
+5. Add one matching reference answer per exercise in `docs/solutions/reference-solutions.md`.
+6. Register the lesson in `frontend/src/data/course.ts` to preserve the intended learning order.
+7. Add a grader in `backend/labs.py` and metadata in `frontend/src/data/labs.ts` only when deterministic automatic checking is appropriate.
+8. Run `make check` before opening a pull request.
 
 ## Testing and verification
 
@@ -220,7 +225,7 @@ make up-detached
 make health
 ```
 
-Project verification covers Markdown parsing, explanation-to-exercise gating, browser persistence, frontend compilation, Docker assembly, API health, and real Spark execution paths.
+Project verification covers Markdown and solution parsing, explanation-to-exercise gating, reference-solution reveal, rubric checking, skip navigation, browser persistence, frontend compilation, Docker assembly, API health, and real Spark execution paths.
 
 ## Local runner safety
 

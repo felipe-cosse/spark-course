@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { codeExamples, extractSection, lessonExplanation, parseExercises } from "./markdown";
+import { codeExamples, extractSection, lessonExplanation, parseExercises, parseReferenceSolutions } from "./markdown";
 
 const lesson = `# A lesson
 
@@ -60,5 +60,22 @@ describe("Markdown course parsing", () => {
     expect(exercises[0].body).not.toContain("Second task");
     expect(exercises[1]).toMatchObject({ number: 2, title: "Second task" });
     expect(exercises[1].body).not.toContain("Self-check");
+  });
+});
+
+describe("parseReferenceSolutions", () => {
+  it("indexes solution sections by source path and exercise number", () => {
+    const solutions = parseReferenceSolutions(`# Reference solutions
+
+## /docs/lesson.md#1
+
+First answer.
+
+## /docs/lesson.md#2
+
+Second answer.`);
+
+    expect(solutions.get("/docs/lesson.md#1")).toBe("First answer.");
+    expect(solutions.get("/docs/lesson.md#2")).toBe("Second answer.");
   });
 });

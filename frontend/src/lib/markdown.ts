@@ -57,3 +57,14 @@ export function extractSubsection(markdown: string, heading: string): string {
   const next = /^(?:###|##)\s+/m.exec(following);
   return following.slice(0, next?.index ?? following.length).trim();
 }
+
+export function parseReferenceSolutions(markdown: string): Map<string, string> {
+  const matches = [...markdown.matchAll(/^## (\/docs\/.+\.md)#(\d+)\s*$/gm)];
+  return new Map(
+    matches.map((match, index) => {
+      const start = (match.index ?? 0) + match[0].length;
+      const end = matches[index + 1]?.index ?? markdown.length;
+      return [`${match[1]}#${match[2]}`, markdown.slice(start, end).trim()];
+    }),
+  );
+}
