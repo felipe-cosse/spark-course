@@ -7,10 +7,10 @@ export const labs: LabDefinition[] = [
     exerciseNumber: 2,
     functionName: "remainder_counts",
     starter: `def remainder_counts(spark):
-    """Return a DataFrame with columns remainder and count."""
-    numbers = spark.range(0, 100)
+    """Return count and sum by remainder for multiples of 3 from 1 through 100."""
+    numbers = spark.range(1, 101)
 
-    # TODO: calculate id % 10 as remainder, group, count, and sort.
+    # TODO: keep multiples of 3, calculate id % 10, then aggregate.
     result = numbers
     return result
 
@@ -19,7 +19,8 @@ export const labs: LabDefinition[] = [
 result = remainder_counts(spark)`,
     criteria: [
       "Return exactly ten remainder groups (0 through 9).",
-      "Each group contains ten values.",
+      "Aggregate only the 33 multiples of 3 from 1 through 100.",
+      "Return both count and sum for every remainder.",
       "Use Spark column expressions instead of collecting rows in Python.",
     ],
   },
@@ -38,7 +39,7 @@ result = remainder_counts(spark)`,
 result = daily_metrics(orders)`,
     criteria: [
       "Produce one row per order date.",
-      "Calculate complete count, customers, revenue, average value, and cancelled count.",
+      "Calculate complete count, customers, revenue, average value, cancelled count, and cancellation rate.",
       "Keep revenue and average value as decimal values.",
     ],
   },
@@ -48,11 +49,11 @@ result = daily_metrics(orders)`,
     exerciseNumber: 2,
     functionName: "validate_orders",
     starter: `def validate_orders(raw):
-    """Return (valid_df, rejected_df) after parsing raw order strings."""
-    # Columns: order_id, ordered_at_raw, amount_raw
+    """Return typed valid rows and raw rejected rows with all reasons."""
+    # Columns: order_id, ordered_at_raw, amount_raw, currency, status
     parsed = raw
     # TODO: parse the timestamp and decimal amount with try_* functions.
-    # TODO: route invalid rows to rejected_df with a reason column.
+    # TODO: build rejection_reasons: array<string> for every applicable rule.
     return parsed, parsed
 
 
@@ -60,8 +61,9 @@ valid_df, rejected_df = validate_orders(raw_orders)
 result = valid_df`,
     criteria: [
       "Parse timestamp and amount into explicit target types.",
-      "Keep valid rows separate from rejected rows.",
-      "Attach a useful rejection reason without throwing away the raw values.",
+      "Classify blank IDs, malformed values, negatives, unsupported currency, null status, and overflow.",
+      "Make valid and rejected outputs mutually exclusive and exhaustive.",
+      "Retain every applicable rejection reason and all raw evidence.",
     ],
   },
   {
@@ -69,17 +71,22 @@ result = valid_df`,
     sourcePath: "/docs/01-foundations/04-rdds-and-shared-variables.md",
     exerciseNumber: 1,
     functionName: "purchase_totals",
-    starter: `def purchase_totals(sc, purchases):
+    starter: `def purchase_totals_grouped(sc, purchases):
+    """Return totals calculated with groupByKey."""
+    return sc.parallelize([])
+
+
+def purchase_totals(sc, purchases):
     """Return an RDD of (customer_id, total_amount) pairs."""
-    # purchases contains (customer_id, amount) tuples.
-    # TODO: parallelize, map to key/value pairs, and reduce by key.
+    # TODO: calculate the same totals with reduceByKey.
     return sc.parallelize([])
 
 
 result = purchase_totals(sc, purchases).toDF(["customer_id", "total_amount"])`,
     criteria: [
-      "Aggregate purchases by customer with an RDD key operation.",
-      "Return one pair per customer with the correct total.",
+      "Implement both groupByKey and reduceByKey versions.",
+      "Prove both versions return the same customer totals.",
+      "Explain why reduceByKey usually sends less data across the network.",
       "Do not collect before the aggregation.",
     ],
   },
@@ -89,16 +96,19 @@ result = purchase_totals(sc, purchases).toDF(["customer_id", "total_amount"])`,
     exerciseNumber: 2,
     functionName: "clean_customers",
     starter: `def clean_customers(customers):
-    """Normalize customer fields without changing the input DataFrame."""
-    # Columns: customer_id, email, country, marketing_opt_in
-    # TODO: trim/lower email, upper country, and normalize the boolean.
+    """Normalize nested customer data and attach explicit quality flags."""
+    # Columns: customer_id, name, email, phone, preferences_json, tags
+    # TODO: normalize scalar fields, parse preferences, normalize tags,
+    # create quality_flags, and return an intentional selected schema.
     return customers
 
 
 result = clean_customers(customers)`,
     criteria: [
-      "Normalize email and country with built-in functions.",
-      "Convert common true/false strings to a Boolean column.",
+      "Trim IDs/names and normalize email and phone with built-in functions.",
+      "Parse preference JSON into a struct.",
+      "Normalize and deduplicate tags with higher-order functions.",
+      "Return explicit quality flags and an intentional output schema.",
       "Preserve one output row per input customer.",
     ],
   },
@@ -116,8 +126,9 @@ result = clean_customers(customers)`,
 result = customer_timeline(orders)`,
     criteria: [
       "Sequence orders deterministically within each customer.",
-      "Expose the previous order timestamp.",
-      "Calculate a cumulative monetary total without collapsing rows.",
+      "Expose previous timestamp and days since previous order.",
+      "Calculate cumulative spend, final lifetime spend, and lifetime share.",
+      "Preserve the completed-order grain and safely handle zero totals.",
     ],
   },
   {
@@ -146,19 +157,20 @@ result = changed`,
     exerciseNumber: 2,
     functionName: "parse_events",
     starter: `def parse_events(events):
-    """Parse payload JSON while preserving malformed records."""
+    """Return accepted events, item-grain rows, and rejected payloads."""
     # Columns: event_id, payload
-    payload_schema = "event_type string, user_id string, amount decimal(12,2)"
-    # TODO: parse payload and split good/bad records.
-    return events, events
+    payload_schema = "event_type string, user_id string, amount decimal(12,2), customer struct<id:string>, items array<struct<sku:string,quantity:int>>, attributes map<string,string>"
+    # TODO: parse once, attach rejection_reasons, and build all three outputs.
+    return events, events, events
 
 
-valid_events, malformed_events = parse_events(events)
+valid_events, item_rows, malformed_events = parse_events(events)
 result = valid_events`,
     criteria: [
       "Parse JSON with an explicit schema.",
-      "Flatten valid fields into a stable table.",
-      "Retain the original payload for malformed records.",
+      "Return accepted-event and item-level outputs with documented grains.",
+      "Use explode_outer so an empty item array remains observable.",
+      "Retain malformed payloads with an array of rejection reasons.",
     ],
   },
   {
@@ -167,17 +179,19 @@ result = valid_events`,
     exerciseNumber: 1,
     functionName: "evaluate_quality",
     starter: `def evaluate_quality(orders):
-    """Return one row of data-quality metrics."""
-    # Columns: order_id, customer_id, amount, status
-    # TODO: calculate total, null/invalid counts, duplicate keys, and valid rate.
-    return orders
+    """Return (valid, rejected, rule_counts) with all failures per row."""
+    # Columns: order_id, customer_id, amount_raw, status, event_at
+    # TODO: parse amount, evaluate all six named rules, and route by array size.
+    return orders, orders, orders
 
 
-result = evaluate_quality(orders)`,
+valid_orders, rejected_orders, rule_counts = evaluate_quality(orders)
+result = rule_counts`,
     criteria: [
-      "Return a compact metrics DataFrame instead of collecting source rows.",
-      "Measure required-field, domain, and duplicate-key failures.",
-      "Calculate a valid-rate metric that can support a threshold decision.",
+      "Evaluate missing key, malformed amount, negative amount, invalid status, stale data, and duplicate key.",
+      "Retain every applicable failure per rejected row.",
+      "Make valid and rejected outputs mutually exclusive and exhaustive.",
+      "Return aggregate counts by named rule without collecting source rows.",
     ],
   },
 ];

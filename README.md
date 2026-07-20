@@ -69,7 +69,8 @@ The exercise workspace provides:
 - stdout and bounded DataFrame previews;
 - formatted Spark physical plans;
 - exercise-specific tests where an automatic grader is available;
-- guided rubric checks for open-ended engineering and workplace tasks;
+- exercise-specific guided rubric checks for open-ended engineering and workplace tasks;
+- an attempt requirement so a blank editor cannot pass a guided review;
 - reference solutions that learners can reveal after attempting a task;
 - separate completed/skipped progress, forward navigation, hints, and browser-local draft persistence.
 
@@ -141,7 +142,9 @@ spark-course/
 │   ├── app.py             FastAPI application and frontend serving
 │   ├── runner.py          Worker lifecycle and timeout handling
 │   ├── worker.py          Spark session, execution, and plan capture
-│   └── labs.py            Fixtures and deterministic graders
+│   ├── labs.py            Fixtures and deterministic graders
+│   ├── content_check.py   Exercise/solution/definition coverage audit
+│   └── solution_check.py  Executable published-solution verification
 ├── docs/
 │   ├── exercises/         Companion exercise page for every lesson
 │   ├── solutions/         Reference approaches for every numbered exercise
@@ -187,7 +190,9 @@ Docker remains the recommended option when you want a reproducible Java and PySp
 | `make dev` | Start the Vite development server |
 | `make dev-backend` | Start FastAPI with reload enabled |
 | `make test` | Run frontend unit tests |
+| `make test-content` | Validate all exercise/solution/source/definition mappings |
 | `make test-e2e` | Run browser learning-flow tests |
+| `make test-solutions` | Build the image and run all 9 published graded answers in Spark |
 | `make build` | Type-check and build the frontend |
 | `make check` | Run unit tests, build, and browser tests |
 | `make docker-build` | Build the complete course image |
@@ -209,6 +214,8 @@ Course content lives under `docs/` and can be reviewed without running the appli
 7. Add a grader in `backend/labs.py` and metadata in `frontend/src/data/labs.ts` only when deterministic automatic checking is appropriate.
 8. Run `make check` before opening a pull request.
 
+When changing a graded lab, also run `make test-solutions`. This executes the first Python block published for each graded exercise against the same fixture and grader learners use, preventing a reference answer from drifting away from its prompt or checker.
+
 ## Testing and verification
 
 Run the non-containerized checks:
@@ -226,6 +233,8 @@ make health
 ```
 
 Project verification covers Markdown and solution parsing, explanation-to-exercise gating, reference-solution reveal, rubric checking, skip navigation, browser persistence, frontend compilation, Docker assembly, API health, and real Spark execution paths.
+
+`make check` also audits all 124 exercise mappings, verifies that every source page retains its definition section, and rejects missing, duplicate, placeholder, or unusually brief reference answers. `make test-solutions` is the slower Spark-level contract check for all automatically graded answers.
 
 ## Local runner safety
 

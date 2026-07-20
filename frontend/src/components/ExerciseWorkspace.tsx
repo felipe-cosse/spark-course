@@ -23,7 +23,7 @@ import { useEffect, useMemo, useState } from "react";
 import { labFor } from "../data/labs";
 import { solutionFor } from "../data/solutions";
 import { executeSpark } from "../lib/api";
-import { extractBullets, extractSubsection, parseExercises } from "../lib/markdown";
+import { exerciseCriteria, extractSubsection, parseExercises } from "../lib/markdown";
 import type { CourseItem, LessonProgress, RunResult } from "../types";
 import { LearningSteps } from "./LearningSteps";
 import { MarkdownContent } from "./MarkdownContent";
@@ -57,18 +57,6 @@ df = spark.createDataFrame(data, "name string, value long")
 # Replace this preview with your solution.
 result = df
 result.show()`;
-
-function criteriaFor(body: string, fallback: string, selfCheck: string[]): string[] {
-  const requirementSection = extractSubsection(body, "Requirements");
-  const acceptanceSection = extractSubsection(body, "Acceptance criteria");
-  const deliverable = extractSubsection(body, "Deliverable");
-  const bullets = [requirementSection, acceptanceSection]
-    .flatMap((section) => [...section.matchAll(/^[-*]\s+(.+)$/gm)].map((match) => match[1].trim()));
-  if (bullets.length) return bullets;
-  if (deliverable) return [deliverable.replace(/\s+/g, " ").trim(), ...selfCheck.slice(0, 2)];
-  if (selfCheck.length) return selfCheck;
-  return [`The answer fully addresses “${fallback}” and includes verifiable evidence.`];
-}
 
 export function ExerciseWorkspace({
   item,
@@ -109,17 +97,24 @@ export function ExerciseWorkspace({
   const exerciseId = `${item.id}-exercise-${selected.number}`;
   const lab = labFor(item.sourcePath, selected.number);
   const draftKey = lab?.id ?? exerciseId;
-  const code = codeDrafts[draftKey] ?? lab?.starter ?? genericStarter;
+  const starterCode = lab?.starter ?? genericStarter;
+  const code = codeDrafts[draftKey] ?? starterCode;
   const notes = noteDrafts[exerciseId] ?? "";
   const done = progress.completedExerciseIds.includes(exerciseId);
   const skipped = progress.skippedExerciseIds.includes(exerciseId);
   const labPassed = Boolean(lab && progress.passedLabIds.includes(lab.id));
-  const selfCheck = extractBullets(item.exerciseMarkdown, "Self-check");
-  const criteria = lab?.criteria ?? criteriaFor(selected.body, selected.title, selfCheck);
+  const criteria = lab?.criteria ?? exerciseCriteria(selected.body, selected.title);
   const hint = extractSubsection(selected.body, "Hint") || "Return to the worked example. Start with a three-row fixture that includes one normal row, one boundary case, and one invalid row.";
   const solution = solutionFor(item.sourcePath, selected.number);
   const selectedChecks = reviewChecks[exerciseId] ?? criteria.map(() => false);
   const allReviewChecksPassed = criteria.length > 0 && selectedChecks.every(Boolean);
+  const hasWrittenEvidence = notes.trim().length >= 40;
+  const hasCodeEvidence = (
+    code.trim() !== starterCode.trim()
+    && !code.includes("# Replace this preview with your solution.")
+    && code.replace(/^\s*#.*$/gm, "").trim().length >= 60
+  );
+  const hasAttempt = hasWrittenEvidence || hasCodeEvidence;
   const allResolved = exercises.length > 0 && exercises.every((exercise) => {
     const id = `${item.id}-exercise-${exercise.number}`;
     return progress.completedExerciseIds.includes(id) || progress.skippedExerciseIds.includes(id);
@@ -176,7 +171,7 @@ export function ExerciseWorkspace({
   };
 
   const finishSelfReview = () => {
-    if (!allReviewChecksPassed) return;
+    if (!hasAttempt || !allReviewChecksPassed) return;
     onExerciseDone(exerciseId, true);
     setSelfReviewOpen(false);
     setFeedbackTab("tests");
@@ -201,7 +196,7 @@ export function ExerciseWorkspace({
   };
 
   const resetExercise = () => {
-    onDraft("codeDrafts", draftKey, lab?.starter ?? genericStarter);
+    onDraft("codeDrafts", draftKey, starterCode);
     onDraft("noteDrafts", exerciseId, "");
     onExerciseDone(exerciseId, false);
     onExerciseSkipped(exerciseId, false);
@@ -328,10 +323,13 @@ export function ExerciseWorkspace({
           <div className="feedback-body">
             {requestError ? <div className="error-message">{requestError}</div> : feedbackTab === "tests" ? (
               !lab && done ? (
-                <div className="review-passed"><CheckCircle2 size={18} /><div><strong>Self-review complete</strong><span>Your answer meets every stated criterion.</span></div></div>
+                <div className="review-passed"><CheckCircle2 size={18} /><div><strong>Guided review complete</strong><span>Your recorded evidence addresses every exercise-specific criterion.</span></div></div>
               ) : !lab && selfReviewOpen ? (
                 <div className="self-review">
-                  <p>Compare your work with the reference solution, then confirm each criterion with evidence from your answer.</p>
+                  <p>Compare your attempt with the reference solution, then confirm each criterion using evidence in your code or notebook notes.</p>
+                  {!hasAttempt && (
+                    <div className="error-message">Record an attempt first: write at least 40 characters of notes, or replace the preview code with a substantive answer.</div>
+                  )}
                   <div className="review-checklist">
                     {criteria.map((criterion, index) => (
                       <label key={`${criterion}-${index}`}>
@@ -340,8 +338,8 @@ export function ExerciseWorkspace({
                       </label>
                     ))}
                   </div>
-                  <button className="primary-button" disabled={!allReviewChecksPassed} onClick={finishSelfReview}>
-                    <CheckCircle2 size={16} /> Confirm answer meets criteria
+                  <button className="primary-button" disabled={!hasAttempt || !allReviewChecksPassed} onClick={finishSelfReview}>
+                    <CheckCircle2 size={16} /> Confirm evidence meets criteria
                   </button>
                 </div>
               ) : result?.tests.length ? (
@@ -353,7 +351,7 @@ export function ExerciseWorkspace({
                     </li>
                   ))}
                 </ul>
-              ) : <p>{lab ? "Choose Check answer to run the task-specific tests." : "Choose Check answer to compare with the reference solution and complete the review checklist."}</p>
+              ) : <p>{lab ? "Choose Check answer to run the task-specific tests." : "Record an attempt, then choose Check answer to compare it with the reference solution and complete the guided review."}</p>
             ) : feedbackTab === "plan" ? (
               <pre>{result?.plan || "Run a DataFrame assigned to result to inspect its formatted physical plan."}</pre>
             ) : (
@@ -365,7 +363,7 @@ export function ExerciseWorkspace({
         <footer className="lesson-footer exercise-footer">
           <div className={`exercise-result ${done ? "is-complete" : skipped ? "is-skipped" : ""}`}>
             {done ? <CheckCircle2 size={17} /> : skipped ? <SkipForward size={17} /> : <Circle size={17} />}
-            {done ? "Exercise completed" : skipped ? "Exercise skipped" : lab ? "Pass the tests or skip" : "Check your answer or skip"}
+            {done ? "Exercise completed" : skipped ? "Exercise skipped" : lab ? "Pass the tests or skip" : "Record evidence, review, or skip"}
           </div>
           <div className="exercise-navigation">
             {!done && !skipped && (

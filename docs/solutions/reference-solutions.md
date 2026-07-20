@@ -4,7 +4,30 @@ These are reference approaches, not answer keys that exclude other valid designs
 
 ## /docs/README.md#1
 
-For a data-engineer path, a useful dependency chain is: distributed execution → schemas and types → DataFrame transformations → aggregations/windows → joins → storage → testing and quality → idempotency → tuning → streaming → workplace cases → capstones. Distributed execution explains partitions and shuffles; schemas establish contracts; transformations preserve or change grain; joins and aggregations depend on those contracts; production modules then add recovery and operational evidence.
+For a data-engineer path, one valid 12-module dependency map is:
+
+```mermaid
+flowchart LR
+    A[Distributed execution] --> B[Schemas and types]
+    B --> C[DataFrame transformations]
+    C --> D[Aggregations and windows]
+    C --> E[Joins]
+    D --> F[Storage and tables]
+    E --> F
+    F --> G[Design and testing]
+    G --> H[Quality and idempotency]
+    H --> I[Performance tuning]
+    H --> J[Structured Streaming]
+    I --> K[Workplace cases]
+    J --> K
+    K --> L[Capstones]
+```
+
+1. Distributed execution comes first because partitions, actions, and shuffles explain the cost and behavior of every later transformation.
+2. Schemas and types then establish row-level contracts, allowing DataFrame transformations to normalize values without losing their meaning.
+3. Aggregations, windows, and joins depend on an explicit input grain; otherwise a syntactically correct operation can silently duplicate or collapse business records.
+4. Storage, testing, quality, and idempotency turn transformation logic into a rerunnable pipeline with evidence about what was accepted, rejected, and published.
+5. Tuning and streaming come after correctness and recovery because a fast or continuously running pipeline is useful only when its state and output remain trustworthy; workplace cases and capstones integrate all of these dependencies.
 
 ## /docs/README.md#2
 
@@ -43,28 +66,34 @@ The evidence note should capture `python --version`, `java -version`, `python -m
 ## /docs/00-getting-started/02-setup.md#2
 
 ```python
-from pyspark.sql import SparkSession, functions as F
-
 def remainder_counts(spark):
-    numbers = spark.range(1, 101)
     return (
-        numbers.filter(F.col("id") % 3 == 0)
+        spark.range(1, 101)
+        .where(F.col("id") % 3 == 0)
         .withColumn("remainder", F.col("id") % 10)
         .groupBy("remainder")
         .agg(F.count("*").alias("count"), F.sum("id").alias("sum"))
         .orderBy("remainder")
     )
 
+result = remainder_counts(spark)
+assert result.where("remainder = 0").first()["sum"] == 180
+result.explain("formatted")
+```
+
+The course runner already provides `spark` and `F`, so this version deliberately reuses that session. `first` is the bounded assertion action, and `groupBy` introduces the shuffle. Exactly 33 values pass the filter. For remainder zero, those values are 30, 60, and 90, whose count is 3 and sum is 180.
+
+In a standalone script, create and stop the session at the application boundary—not inside `remainder_counts`:
+
+```python
+from pyspark.sql import SparkSession, functions as F
+
 spark = SparkSession.builder.master("local[2]").appName("smoke-test").getOrCreate()
 try:
-    result = remainder_counts(spark)
-    assert result.where("remainder = 0").first()["sum"] == 180
-    result.explain("formatted")
+    remainder_counts(spark).show()
 finally:
     spark.stop()
 ```
-
-`collect`/`first` is the bounded assertion action, and `groupBy` introduces the likely shuffle. The remainder-zero multiples of three are 30, 60, and 90, whose sum is 180.
 
 ## /docs/00-getting-started/02-setup.md#3
 
@@ -77,7 +106,21 @@ finally:
 
 ## /docs/01-foundations/01-distributed-execution.md#1
 
-The read is the source. `filter`, `select`, and `limit` are normally narrow. `dropDuplicates`, `groupBy().count()`, and global `orderBy` require exchanges/wide work. `collect()` is the action and the driver-memory boundary. The final grain is at most 20 rows, one per event type, ordered by count. The exact exchange placement must be confirmed in the formatted plan because Spark can combine or rearrange operators.
+```python
+result = (
+    spark.read.parquet("/data/events")                 # source: lazy file scan
+    .filter("event_date >= DATE '2026-07-01'")        # narrow: each input row is tested locally
+    .select("customer_id", "event_type")              # narrow: projection preserves row grain
+    .dropDuplicates(["customer_id", "event_type"])    # wide: keys must meet to remove duplicates
+    .groupBy("event_type")                             # wide when aggregated: redistribute by event type
+    .count()                                           # transformation here, not DataFrame.count() action
+    .orderBy("count", ascending=False)                 # wide/global ordering, often an Exchange
+    .limit(20)                                         # bounded top-N transformation
+    .collect()                                         # action and distributed-to-driver boundary
+)
+```
+
+The read is the source; `filter` and `select` are normally narrow because one output partition can be computed from its corresponding input partition. `dropDuplicates`, grouped `count`, and the global ordering require records from different partitions to meet, so expect exchange/stage boundaries around those operations. The final grain is at most 20 local `Row` objects, one per event type, ordered by descending count. The `limit` makes this particular collection bounded, but the exact exchange placement must still be confirmed in `explain("formatted")` because Catalyst may combine or rearrange operators.
 
 ## /docs/01-foundations/01-distributed-execution.md#2
 
@@ -89,7 +132,44 @@ Write customer histories to a partitioned durable sink, then let a bounded notif
 
 ## /docs/01-foundations/02-sessions-and-first-dataframe.md#1
 
-Use an explicit schema with string identifiers/status, `TimestampType` for order time, and `DecimalType(12,2)` for amount. The input grain is one order event. A null amount means “not supplied/unknown,” not zero; make only the fields allowed by the source contract nullable. Verify with `printSchema()` and include repeated customers, a null amount, and at least two dates in the fixture.
+```python
+from datetime import datetime
+from decimal import Decimal
+from pyspark.sql import types as T
+
+order_schema = T.StructType([
+    T.StructField("order_id", T.StringType(), False),
+    T.StructField("customer_id", T.StringType(), False),
+    T.StructField("ordered_at", T.TimestampType(), False),
+    T.StructField("status", T.StringType(), False),
+    T.StructField("amount", T.DecimalType(12, 2), True),
+])
+
+rows = [
+    ("o1", "c1", datetime(2026, 7, 18, 9), "COMPLETE", Decimal("12.50")),
+    ("o2", "c1", datetime(2026, 7, 18, 10), "OPEN", Decimal("8.00")),
+    ("o3", "c2", datetime(2026, 7, 18, 11), "CANCELLED", Decimal("4.00")),
+    ("o4", "c3", datetime(2026, 7, 18, 12), "COMPLETE", None),
+    ("o5", "c2", datetime(2026, 7, 19, 9), "COMPLETE", Decimal("20.00")),
+    ("o6", "c4", datetime(2026, 7, 19, 10), "OPEN", Decimal("5.25")),
+    ("o7", "c5", datetime(2026, 7, 19, 11), "CANCELLED", Decimal("3.75")),
+    ("o8", "c1", datetime(2026, 7, 19, 12), "COMPLETE", Decimal("7.00")),
+]
+
+orders = spark.createDataFrame(rows, order_schema)
+orders.printSchema()
+orders.show(truncate=False)
+```
+
+| Field | Input meaning | Null policy |
+|---|---|---|
+| `order_id` | Stable identity of one order event | Not nullable; quarantine missing identity |
+| `customer_id` | Customer owning the event | Not nullable in this contract |
+| `ordered_at` | UTC instant at which the event occurred | Not nullable; required for date grouping |
+| `status` | Current event state | Not nullable; allowed values are validated separately |
+| `amount` | Monetary amount supplied by the source | Nullable; null means unknown/not supplied, never zero |
+
+The fixture grain is one order event per row. Using `Decimal` values with `DecimalType(12,2)` avoids an intermediate binary floating-point conversion, while the repeated `c1`, all three statuses, two dates, and null amount make later aggregation semantics observable.
 
 ## /docs/01-foundations/02-sessions-and-first-dataframe.md#2
 
@@ -122,7 +202,31 @@ Register `orders.createOrReplaceTempView("orders")`, then use `SUM(CASE WHEN ...
 
 ## /docs/01-foundations/03-schemas-and-types.md#1
 
-Use non-null string IDs and UTC event timestamp, `DecimalType` for amount, a constrained currency string, a nullable customer struct only if anonymous events are valid, an array of non-null item structs, nullable tags if absence differs from an empty array, and a string map for free-form attributes. Document both field nullability and `containsNull` for arrays/maps. Reject missing identity/time fields rather than silently inventing them.
+```python
+from pyspark.sql import types as T
+
+item_type = T.StructType([
+    T.StructField("sku", T.StringType(), False),
+    T.StructField("quantity", T.IntegerType(), False),
+])
+customer_type = T.StructType([
+    T.StructField("customer_id", T.StringType(), False),
+    T.StructField("segment", T.StringType(), True),
+])
+order_event_schema = T.StructType([
+    T.StructField("event_id", T.StringType(), False),
+    T.StructField("order_id", T.StringType(), False),
+    T.StructField("event_at_utc", T.TimestampType(), False),
+    T.StructField("amount", T.DecimalType(12, 2), True),
+    T.StructField("currency", T.StringType(), False),
+    T.StructField("customer", customer_type, True),
+    T.StructField("items", T.ArrayType(item_type, containsNull=False), False),
+    T.StructField("tags", T.ArrayType(T.StringType(), containsNull=False), True),
+    T.StructField("attributes", T.MapType(T.StringType(), T.StringType(), valueContainsNull=True), True),
+])
+```
+
+Identity and UTC event time are non-null because routing, ordering, and deduplication cannot safely invent them. Amount is nullable because some event types may legitimately omit money, but a present value must fit `decimal(12,2)`; currency remains non-null and is checked against an allowlist outside the structural schema. The whole customer struct is nullable only if anonymous events are allowed, while its ID is required when the struct exists. Items are a required array whose elements and key fields cannot be null; an empty array means “known to have no items.” Nullable tags distinguish “not supplied” from an empty list, and the attributes map permits unknown values while keeping string keys non-null. Tests should inspect both top-level `nullable` and nested `containsNull`/`valueContainsNull`, because `printSchema()` exposes all three parts of the contract.
 
 ## /docs/01-foundations/03-schemas-and-types.md#2
 
@@ -130,23 +234,36 @@ Use non-null string IDs and UTC event timestamp, `DecimalType` for amount, a con
 def validate_orders(raw):
     parsed = (
         raw.withColumn("ordered_at", F.expr("try_cast(ordered_at_raw as timestamp)"))
+        .withColumn("amount_wide", F.expr("try_cast(amount_raw as decimal(38,18))"))
         .withColumn("amount", F.expr("try_cast(amount_raw as decimal(12,2))"))
         .withColumn(
             "rejection_reasons",
             F.filter(F.array(
                 F.when(F.col("order_id").isNull() | (F.trim("order_id") == ""), F.lit("missing_order_id")),
                 F.when(F.col("ordered_at").isNull(), F.lit("invalid_timestamp")),
-                F.when(F.col("amount").isNull(), F.lit("invalid_amount")),
-                F.when(F.col("amount") < 0, F.lit("negative_amount")),
+                F.when(F.col("amount_wide").isNull(), F.lit("invalid_amount")),
+                F.when(F.col("amount_wide").isNotNull() & F.col("amount").isNull(), F.lit("amount_overflow")),
+                F.when(F.col("amount_wide") < 0, F.lit("negative_amount")),
+                F.when(F.col("currency").isNull() | ~F.col("currency").isin("USD", "EUR"), F.lit("unsupported_currency")),
+                F.when(F.col("status").isNull() | ~F.col("status").isin("OPEN", "COMPLETE", "CANCELLED"), F.lit("invalid_status")),
             ), lambda reason: reason.isNotNull()),
         )
     )
-    valid = parsed.where(F.size("rejection_reasons") == 0).select("order_id", "ordered_at", "amount")
-    rejected = parsed.where(F.size("rejection_reasons") > 0)
+    valid = (
+        parsed.where(F.size("rejection_reasons") == 0)
+        .select(F.trim("order_id").alias("order_id"), "ordered_at", "amount", "currency", "status")
+    )
+    rejected = (
+        parsed.where(F.size("rejection_reasons") > 0)
+        .select("order_id", "ordered_at_raw", "amount_raw", "currency", "status", "rejection_reasons")
+    )
     return valid, rejected
+
+valid_df, rejected_df = validate_orders(raw_orders)
+result = valid_df
 ```
 
-Extend the reason array for currency, status, and overflow. Keeping raw and parsed columns until routing makes the outputs exhaustive and preserves investigation evidence.
+`amount_wide` distinguishes malformed text from a numeric value that exceeds the target `decimal(12,2)`. The filtered array retains every applicable reason, including several reasons on the same row. Both branches use the same classified DataFrame and opposite array-size predicates, so they are mutually exclusive and exhaustive. The rejected branch deliberately selects the original strings rather than replacing the evidence with parsed nulls.
 
 ## /docs/01-foundations/03-schemas-and-types.md#3
 
@@ -155,11 +272,21 @@ Parse local Los Angeles text with the named IANA zone, convert to UTC, then deri
 ## /docs/01-foundations/04-rdds-and-shared-variables.md#1
 
 ```python
+def purchase_totals_grouped(sc, purchases):
+    return sc.parallelize(purchases).groupByKey().mapValues(sum)
+
+
 def purchase_totals(sc, purchases):
     return sc.parallelize(purchases).reduceByKey(lambda left, right: left + right)
+
+
+grouped = purchase_totals_grouped(sc, purchases)
+reduced = purchase_totals(sc, purchases)
+assert sorted(grouped.collect()) == sorted(reduced.collect())
+result = reduced.toDF(["customer_id", "total_amount"])
 ```
 
-Both `groupByKey().mapValues(sum)` and `reduceByKey` can return the same totals. `reduceByKey` performs map-side combination, sending partial totals rather than every purchase over the network; `groupByKey` materializes all values per key and creates greater shuffle and memory pressure.
+The equality assertion proves both implementations produce the same customer totals for the fixture. `groupByKey` sends and materializes every purchase value for a customer before summing. `reduceByKey` can combine values within each input partition first, so the shuffle normally carries partial totals rather than all source records. The two actions above are appropriate for a tiny learning fixture; production comparison should use Spark metrics rather than collecting an unbounded result.
 
 ## /docs/01-foundations/04-rdds-and-shared-variables.md#2
 
@@ -177,23 +304,45 @@ An accumulator update can be applied more than once when a task is retried or re
 
 ```python
 def clean_customers(customers):
-    truthy = ["true", "1", "yes", "y"]
-    falsy = ["false", "0", "no", "n"]
-    normalized = (
-        customers
-        .withColumn("email", F.lower(F.trim("email")))
-        .withColumn("country", F.upper(F.trim("country")))
-        .withColumn("opt_in_raw", F.lower(F.trim("marketing_opt_in")))
+    preference_schema = "marketing_opt_in boolean, language string"
+    empty_tags = F.array().cast("array<string>")
+    normalized_tags = F.array_distinct(
+        F.filter(
+            F.transform(
+                F.coalesce(F.col("tags"), empty_tags),
+                lambda tag: F.lower(F.trim(tag)),
+            ),
+            lambda tag: tag.isNotNull() & (F.length(tag) > 0),
+        )
     )
-    return normalized.withColumn(
-        "marketing_opt_in",
-        F.when(F.col("opt_in_raw").isin(truthy), F.lit(True))
-        .when(F.col("opt_in_raw").isin(falsy), F.lit(False))
-        .otherwise(F.lit(None).cast("boolean")),
-    ).drop("opt_in_raw")
+
+    classified = (
+        customers
+        .withColumn("customer_id", F.trim("customer_id"))
+        .withColumn("name", F.trim("name"))
+        .withColumn("email", F.lower(F.trim("email")))
+        .withColumn("phone", F.regexp_replace("phone", "[^0-9]", ""))
+        .withColumn("preferences", F.from_json("preferences_json", preference_schema))
+        .withColumn("tags", normalized_tags)
+        .withColumn(
+            "quality_flags",
+            F.filter(F.array(
+                F.when(F.col("customer_id").isNull() | (F.col("customer_id") == ""), F.lit("missing_customer_id")),
+                F.when(F.col("email").isNull() | ~F.col("email").rlike(r"^[^@\s]+@[^@\s]+\.[^@\s]+$"), F.lit("invalid_email")),
+                F.when(F.col("phone").isNull() | (F.length("phone") < 10), F.lit("invalid_phone")),
+                F.when(F.get_json_object("preferences_json", "$").isNull(), F.lit("invalid_preferences")),
+            ), lambda flag: flag.isNotNull()),
+        )
+    )
+    return classified.select(
+        "customer_id", "name", "email", "phone", "preferences", "tags", "quality_flags"
+    )
+
+
+result = clean_customers(customers)
 ```
 
-For the full exercise, add native JSON parsing, higher-order tag normalization, explicit quality flags, and a final `select`. The function remains lazy and preserves one output row per customer.
+Every expression is native Spark SQL, so the function remains lazy and Catalyst-visible. `transform` normalizes each tag, `filter` removes null/blank values, and `array_distinct` keeps the first normalized occurrence. JSON parsing produces a typed struct, while `get_json_object(..., "$" )` separately checks whether the raw document is syntactically valid. The final `select` is the output contract; no helper or raw parsing columns leak out, and no operation changes the one-row-per-customer grain.
 
 ## /docs/02-dataframes-sql/01-transformations.md#3
 
@@ -272,14 +421,37 @@ Keep raw API payloads as compressed immutable JSON plus ingestion metadata; use 
 ```python
 def parse_events(events):
     schema = "event_type string, user_id string, amount decimal(12,2), customer struct<id:string>, items array<struct<sku:string,quantity:int>>, attributes map<string,string>"
-    parsed = events.withColumn("parsed", F.from_json("payload", schema))
-    malformed_condition = F.col("parsed").isNull() | F.col("parsed.event_type").isNull() | F.col("parsed.user_id").isNull()
-    malformed = parsed.where(malformed_condition).select("event_id", "payload")
-    valid = parsed.where(~malformed_condition).select("event_id", "parsed.*")
-    return valid, malformed
+    classified = (
+        events.withColumn("parsed", F.from_json("payload", schema))
+        .withColumn(
+            "rejection_reasons",
+            F.filter(F.array(
+                F.when(F.get_json_object("payload", "$").isNull(), F.lit("invalid_json")),
+                F.when(F.col("parsed.event_type").isNull(), F.lit("missing_event_type")),
+                F.when(F.col("parsed.user_id").isNull(), F.lit("missing_user_id")),
+            ), lambda reason: reason.isNotNull()),
+        )
+    )
+    accepted = (
+        classified.where(F.size("rejection_reasons") == 0)
+        .select("event_id", "parsed.*")
+    )
+    items = (
+        accepted.select("event_id", F.explode_outer("items").alias("item"))
+        .select("event_id", "item.sku", "item.quantity")
+    )
+    rejected = (
+        classified.where(F.size("rejection_reasons") > 0)
+        .select("event_id", "payload", "rejection_reasons")
+    )
+    return accepted, items, rejected
+
+
+valid_events, item_rows, malformed_events = parse_events(events)
+result = valid_events
 ```
 
-Accepted event grain is one parsed payload. Item output uses `explode_outer("items")`, preserving an event with null/empty items as one row with null item fields; document whether that is desired. Unknown JSON fields are ignored by the declared schema, while malformed raw payload is retained for investigation.
+Accepted-event grain is one valid payload. Item grain is one item, except `explode_outer` intentionally emits one row with null item fields for an accepted event whose array is empty or null; this keeps the parent event observable. Unknown JSON fields are ignored by the declared schema. Rejected output retains the untouched payload and every applicable reason, so malformed text is still available for investigation.
 
 ## /docs/02-dataframes-sql/04-storage-and-semi-structured-data.md#3
 
@@ -295,7 +467,53 @@ Implement identical predicates, grouping, aliases, and decimal casts in both API
 
 ## /docs/02-dataframes-sql/05-sql-and-catalogs.md#2
 
-Use CTE grains in this order: `completed_orders` one row per order; `customer_month` one row per customer-month; `refund_month` one row per customer-month; `combined` one row per customer-month after a one-to-one join; `with_previous` remains customer-month and adds `lag` over customer/month. Join to a month spine before the lag when zero-activity months must appear.
+```sql
+WITH
+-- Grain: one completed order.
+completed_orders AS (
+  SELECT customer_id, order_id, date_trunc('month', ordered_at) AS month, amount
+  FROM orders
+  WHERE status = 'COMPLETE'
+),
+-- Grain: one row per customer and active order month.
+customer_month AS (
+  SELECT customer_id, month,
+         count(*) AS completed_orders,
+         CAST(sum(amount) AS DECIMAL(18,2)) AS gross_revenue
+  FROM completed_orders
+  GROUP BY customer_id, month
+),
+-- Grain: one row per customer and refund month.
+refund_month AS (
+  SELECT customer_id, date_trunc('month', refunded_at) AS month,
+         CAST(sum(amount) AS DECIMAL(18,2)) AS refund_amount
+  FROM refunds
+  GROUP BY customer_id, date_trunc('month', refunded_at)
+),
+-- Grain: one row per customer-month present in either input aggregate.
+combined AS (
+  SELECT coalesce(c.customer_id, r.customer_id) AS customer_id,
+         coalesce(c.month, r.month) AS month,
+         coalesce(c.completed_orders, 0) AS completed_orders,
+         coalesce(c.gross_revenue, CAST(0 AS DECIMAL(18,2))) AS gross_revenue,
+         coalesce(r.refund_amount, CAST(0 AS DECIMAL(18,2))) AS refund_amount,
+         coalesce(c.gross_revenue, CAST(0 AS DECIMAL(18,2)))
+           - coalesce(r.refund_amount, CAST(0 AS DECIMAL(18,2))) AS net_revenue
+  FROM customer_month c
+  FULL OUTER JOIN refund_month r
+    ON c.customer_id = r.customer_id AND c.month = r.month
+),
+-- Grain: one row per customer-month with the preceding existing month value.
+with_previous AS (
+  SELECT *, lag(net_revenue) OVER (PARTITION BY customer_id ORDER BY month) AS previous_net_revenue
+  FROM combined
+)
+SELECT *, net_revenue - previous_net_revenue AS month_over_month_change
+FROM with_previous
+ORDER BY customer_id, month;
+```
+
+Both inputs to `combined` are unique at customer-month grain, so its full outer join cannot multiply rows. `lag` means the previous row that exists; if the business definition requires calendar-over-calendar change through inactive months, build a customer × month spine, left-join the aggregates to it, and only then apply the window. Verify pre-join uniqueness and reconcile gross revenue and refunds before trusting the change calculation.
 
 ## /docs/02-dataframes-sql/05-sql-and-catalogs.md#3
 
@@ -321,24 +539,51 @@ Test idempotent cleaning with `assertDataFrameEqual(clean(clean(df)), clean(df))
 
 ```python
 def evaluate_quality(orders):
-    duplicate_ids = orders.groupBy("order_id").count().where("count > 1")
-    return orders.agg(
-        F.count("*").alias("total_count"),
-        F.sum(F.col("customer_id").isNull().cast("long")).alias("missing_customer_count"),
-        F.sum((F.col("amount") < 0).cast("long")).alias("invalid_amount_count"),
-        F.sum((F.col("status").isNull() | ~F.col("status").isin("OPEN", "COMPLETE", "CANCELLED")).cast("long")).alias("invalid_status_count"),
-    ).crossJoin(
-        duplicate_ids.agg(F.sum(F.col("count") - 1).alias("duplicate_order_count"))
-    ).withColumn(
-        "valid_rate",
-        F.lit(1.0) - (
-            F.col("missing_customer_count") + F.col("invalid_amount_count") +
-            F.col("invalid_status_count") + F.col("duplicate_order_count")
-        ) / F.col("total_count"),
+    duplicate_ids = (
+        orders.where(F.col("order_id").isNotNull() & (F.trim("order_id") != ""))
+        .groupBy("order_id")
+        .count()
+        .where(F.col("count") > 1)
+        .select("order_id")
+        .withColumn("is_duplicate", F.lit(True))
     )
+
+    classified = (
+        orders.join(duplicate_ids, "order_id", "left")
+        .withColumn("amount", F.expr("try_cast(amount_raw as decimal(12,2))"))
+        .withColumn(
+            "quality_failures",
+            F.filter(F.array(
+                F.when(F.col("order_id").isNull() | (F.trim("order_id") == ""), F.lit("missing_key")),
+                F.when(F.col("amount").isNull(), F.lit("malformed_amount")),
+                F.when(F.col("amount") < 0, F.lit("negative_amount")),
+                F.when(F.col("status").isNull() | ~F.col("status").isin("OPEN", "COMPLETE", "CANCELLED"), F.lit("invalid_status")),
+                F.when(F.col("event_at") < F.to_timestamp(F.lit("2026-07-01 00:00:00")), F.lit("stale_data")),
+                F.when(F.col("is_duplicate") == True, F.lit("duplicate_key")),
+            ), lambda failure: failure.isNotNull()),
+        )
+    )
+    valid = (
+        classified.where(F.size("quality_failures") == 0)
+        .select("order_id", "customer_id", "amount", "status", "event_at")
+    )
+    rejected = (
+        classified.where(F.size("quality_failures") > 0)
+        .select("order_id", "customer_id", "amount_raw", "status", "event_at", "quality_failures")
+    )
+    rule_counts = (
+        rejected.select(F.explode("quality_failures").alias("rule"))
+        .groupBy("rule")
+        .count()
+    )
+    return valid, rejected, rule_counts
+
+
+valid_orders, rejected_orders, rule_counts = evaluate_quality(orders)
+result = rule_counts
 ```
 
-For row routing, construct an array of named failures so one row can retain multiple reasons, then split on array size. Aggregate the exploded rule names for reason counts.
+Duplicate detection is restricted to present, nonblank keys so missing keys are not mislabeled as one duplicate group. Each row receives an array containing all six applicable rules before routing. Opposite array-size predicates make the two record outputs exhaustive and exclusive. Exploding only the small reason arrays produces counts by rule without collecting source rows; summing rule counts is intentionally not used as a row count because one rejected row may fail several rules.
 
 ## /docs/03-production-engineering/02-data-quality-and-idempotency.md#2
 
@@ -496,7 +741,40 @@ Future cancellations and post-cutoff email activity are leakage and must be excl
 
 ## /docs/05-advanced-apis/03-mllib-pipelines.md#2
 
-Split first, then create a Pipeline containing `StringIndexer(handleInvalid="keep")`, `OneHotEncoder`, numeric `Imputer`, `VectorAssembler`, and `LogisticRegression`. Fit the entire pipeline only on training data and transform validation. The unseen category goes to the kept invalid bucket; null numeric values use training-fitted imputation. Assert prediction schema and row count.
+```python
+from pyspark.ml import Pipeline
+from pyspark.ml.classification import LogisticRegression
+from pyspark.ml.feature import Imputer, OneHotEncoder, StringIndexer, VectorAssembler
+
+train = spark.createDataFrame([
+    ("basic", 2.0, 0.0), ("basic", None, 0.0),
+    ("plus", 8.0, 1.0), ("plus", 7.0, 1.0),
+    ("pro", 5.0, 0.0), ("pro", 9.0, 1.0),
+], "plan string, activity double, label double")
+validation = spark.createDataFrame([
+    ("enterprise", 6.0, 1.0),  # unseen category
+    ("basic", None, 0.0),       # missing numeric value
+], train.schema)
+
+plan_index = StringIndexer(
+    inputCol="plan", outputCol="plan_index", handleInvalid="keep"
+)
+plan_vector = OneHotEncoder(inputCol="plan_index", outputCol="plan_vector")
+imputer = Imputer(inputCols=["activity"], outputCols=["activity_imputed"])
+features = VectorAssembler(
+    inputCols=["plan_vector", "activity_imputed"], outputCol="features"
+)
+classifier = LogisticRegression(featuresCol="features", labelCol="label", maxIter=20)
+
+pipeline = Pipeline(stages=[plan_index, plan_vector, imputer, features, classifier])
+model = pipeline.fit(train)                 # every fitted statistic sees training only
+predictions = model.transform(validation)   # validation is never passed to fit
+
+assert predictions.count() == validation.count()
+predictions.select("plan", "activity", "features", "probability", "prediction").show(truncate=False)
+```
+
+`StringIndexer(handleInvalid="keep")` reserves a bucket for `enterprise`, so validation does not fail or silently refit its category order. `Imputer` learns its replacement value from `train`; putting it inside the pipeline prevents a separately fitted preprocessing step from leaking validation data. `VectorAssembler` fixes the feature contract consumed by logistic regression. In a real evaluation, replace this illustrative random-sized fixture with a temporal/entity-safe split, persist the fitted pipeline, and assert schema, row count, label balance, and operational metrics.
 
 ## /docs/05-advanced-apis/03-mllib-pipelines.md#3
 
@@ -640,7 +918,12 @@ An action triggers a job; a job contains stages separated by shuffle boundaries;
 
 ## /docs/reference/glossary.md#2
 
-A transformation builds a lazy DataFrame plan; an action requests a result, such as a write. A storage partition organizes persisted data while an execution partition is a task-sized runtime slice. Event time belongs to the event; processing time belongs to the engine. DataFrames provide schema/optimizer semantics; RDDs expose lower-level distributed objects. Checkpoints preserve recovery/state; cache accelerates reuse. Idempotency means retry has the same logical effect; exactly-once is an end-to-end claim requiring source, engine, and sink evidence.
+- **Transformation versus action.** A transformation adds an operation to a lazy plan and does not by itself request a result. An action asks Spark to execute enough of that plan to return or persist an outcome. *Example:* `df.filter("amount > 0")` is a transformation; `.write.parquet(path)` is an action.
+- **Storage partition versus execution partition.** A storage partition is a persisted layout subdivision, often a directory such as `event_date=2026-07-20`. An execution partition is a runtime slice processed by one task and can combine or split stored files. *Example:* one date directory containing ten small Parquet files might be read into fewer or more than ten task partitions.
+- **Event time versus processing time.** Event time records when the business event occurred at its source. Processing time records when the streaming engine handled it. *Example:* a payment created at 09:00 but delivered at 09:07 has 09:00 event time and approximately 09:07 processing time.
+- **DataFrame versus RDD.** A DataFrame exposes named, typed columns and relational expressions that Catalyst can analyze and optimize. An RDD exposes lower-level distributed Python/JVM objects without the same schema-aware planning. *Example:* a typed `groupBy("customer_id").sum("amount")` lets Spark reason about projection and aggregation, while an RDD pair reduction requires the developer to maintain that meaning.
+- **Checkpoint versus cache.** A checkpoint stores progress or lineage/state for recovery according to the API using it. A cache keeps reusable computed data for speed and may be evicted without serving as a recovery contract. *Example:* deleting a streaming checkpoint can lose offsets/state, while losing a cached batch DataFrame normally causes recomputation.
+- **Idempotency versus exactly-once claim.** Idempotency means applying the same logical operation again produces the same logical target state. Exactly once is an end-to-end delivery/effect claim that requires evidence across source, engine, retries, and sink. *Example:* a merge keyed by stable `event_id` can make repeated micro-batches idempotent even when the source delivers an event more than once.
 
 ## /docs/reference/glossary.md#3
 
@@ -652,7 +935,21 @@ Use the official Spark installation/version matrix for Python support, the Spark
 
 ## /docs/reference/references.md#2
 
-Choose one older example, reproduce its claim/version, and compare the exact Spark 4.2 signature/default/migration note. The correction should say: what changed, the first/target version, compatible replacement, and whether semantics or only syntax/default changed. Include a minimal test because documentation disagreement can hide environment or provider differences.
+**Example correction note — Arrow defaults.** An older Spark 3.5-era tutorial tells readers to set `spark.sql.execution.arrow.pyspark.enabled=true` before relying on Arrow conversion and describes regular Python UDF Arrow optimization as opt-in. That is version-correct for its environment: the [Spark 3.5.7 configuration reference](https://spark.apache.org/docs/3.5.7/configuration.html) shows the regular Python-UDF Arrow setting defaulting to false. For Spark 4.2, the [official PySpark upgrade guide](https://spark.apache.org/docs/4.2.0/api/python/migration_guide/pyspark_upgrade.html) states that columnar PySpark/JVM exchange, regular Python UDFs, and regular Python UDTFs use Arrow by default; it also raises the minimum PyArrow version to 18.0.0.
+
+The compatible correction is: “On Spark 4.2, do not assume Arrow is disabled; inspect the effective settings and dependency version. Set the options explicitly only when the application needs a stable cross-version contract or must restore the legacy row path.” This is a default and serialization-behavior change, not merely syntax. Verify the target environment rather than trusting prose:
+
+```python
+keys = [
+    "spark.sql.execution.arrow.pyspark.enabled",
+    "spark.sql.execution.pythonUDF.arrow.enabled",
+    "spark.sql.execution.pythonUDTF.arrow.enabled",
+]
+for key in keys:
+    print(key, spark.conf.get(key))
+```
+
+Then run a nullable-integer and an overflow fixture through the actual conversion/UDF path, recording Spark, Python, pandas, and PyArrow versions. That test matters because a tutorial may be historically correct while still producing different types or failures under the 4.2 defaults.
 
 ## /docs/reference/references.md#3
 

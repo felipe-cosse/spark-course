@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { codeExamples, extractSection, lessonExplanation, parseExercises, parseReferenceSolutions } from "./markdown";
+import { codeExamples, exerciseCriteria, extractSection, lessonExplanation, parseExercises, parseReferenceSolutions } from "./markdown";
 
 const lesson = `# A lesson
 
@@ -60,6 +60,20 @@ describe("Markdown course parsing", () => {
     expect(exercises[0].body).not.toContain("Second task");
     expect(exercises[1]).toMatchObject({ number: 2, title: "Second task" });
     expect(exercises[1].body).not.toContain("Self-check");
+  });
+
+  it("derives criteria from the selected exercise instead of page-wide self-checks", () => {
+    const exercises = parseExercises(exercisePage);
+    expect(exerciseCriteria(exercises[0].body, exercises[0].title)).toEqual(["Do the first thing.", "Keep the grain."]);
+    expect(exerciseCriteria(exercises[1].body, exercises[1].title)).toEqual(["Do the second thing."]);
+  });
+
+  it("uses an exercise deliverable as review evidence", () => {
+    const criteria = exerciseCriteria("Build a fixture.\n\n### Deliverable\n\nA before-and-after table with observed differences.", "Compare rows");
+    expect(criteria).toEqual([
+      "Produce the requested deliverable: A before-and-after table with observed differences.",
+      "Build a fixture.",
+    ]);
   });
 });
 

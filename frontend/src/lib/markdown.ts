@@ -58,6 +58,54 @@ export function extractSubsection(markdown: string, heading: string): string {
   return following.slice(0, next?.index ?? following.length).trim();
 }
 
+function compactCriterion(value: string): string {
+  return value
+    .replace(/```[\s\S]*?```/g, " ")
+    .replace(/^#{1,6}\s+/gm, "")
+    .replace(/\[([^\]]+)]\([^)]+\)/g, "$1")
+    .replace(/[`*_]/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function listItems(value: string): string[] {
+  return [...value.matchAll(/^(?:[-*]|\d+\.)\s+(.+)$/gm)]
+    .map((match) => compactCriterion(match[1]))
+    .filter(Boolean);
+}
+
+function uniqueCriteria(values: string[]): string[] {
+  return [...new Set(values.map(compactCriterion).filter((value) => value.length >= 8))].slice(0, 8);
+}
+
+export function exerciseCriteria(body: string, title: string): string[] {
+  const mainTask = body.split(/^###\s+/m)[0].trim();
+  const taskItems = listItems(mainTask);
+  const prose = compactCriterion(mainTask);
+  const sentences = prose
+    .split(/(?<=[.!?])\s+/)
+    .map((sentence) => sentence.trim())
+    .filter((sentence) => sentence.length >= 12);
+  const listStart = /^(?:[-*]|\d+\.)\s+/m.exec(mainTask)?.index;
+  const lead = listStart === undefined ? "" : compactCriterion(mainTask.slice(0, listStart));
+  const taskCriteria = taskItems.length ? [...(lead ? [lead] : []), ...taskItems] : sentences;
+
+  const requirements = extractSubsection(body, "Requirements");
+  const acceptance = extractSubsection(body, "Acceptance criteria");
+  const explicitItems = [...listItems(requirements), ...listItems(acceptance)];
+  if (explicitItems.length) return uniqueCriteria([...taskCriteria, ...explicitItems]);
+
+  const deliverable = compactCriterion(extractSubsection(body, "Deliverable"));
+  if (deliverable || taskCriteria.length) {
+    return uniqueCriteria([
+      ...(deliverable ? [`Produce the requested deliverable: ${deliverable}`] : []),
+      ...taskCriteria,
+    ]);
+  }
+
+  return [`Complete “${title}” and include evidence that can be reviewed.`];
+}
+
 export function parseReferenceSolutions(markdown: string): Map<string, string> {
   const matches = [...markdown.matchAll(/^## (\/docs\/.+\.md)#(\d+)\s*$/gm)];
   return new Map(

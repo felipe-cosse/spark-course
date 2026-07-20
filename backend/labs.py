@@ -21,19 +21,25 @@ def build_fixtures(spark: SparkSession, lab_id: str | None) -> dict:
         ], "order_id string, customer_id string, ordered_at timestamp, status string, amount decimal(12,2)")}
     if lab_id == "valid_rejected":
         return {"raw_orders": spark.createDataFrame([
-            ("o1", "2026-07-18 09:30:00", "12.50"),
-            ("o2", "not-a-time", "8.00"),
-            ("o3", "2026-07-19 10:00:00", "wrong"),
-            ("o4", "2026-07-19 11:15:00", "20.25"),
-        ], "order_id string, ordered_at_raw string, amount_raw string")}
+            ("o1", "2026-07-18 09:30:00", "12.50", "USD", "COMPLETE"),
+            (" ", "2026-07-18 10:00:00", "8.00", "USD", "OPEN"),
+            ("o3", "not-a-time", "8.00", "USD", "OPEN"),
+            ("o4", "2026-07-18 11:00:00", "wrong", "USD", "OPEN"),
+            ("o5", "2026-07-18 12:00:00", "-1.00", "USD", "OPEN"),
+            ("o6", "2026-07-18 13:00:00", "9.00", "CAD", "OPEN"),
+            ("o7", "2026-07-18 14:00:00", "9.00", "USD", None),
+            ("o8", "2026-07-18 15:00:00", "12345678901.23", "USD", "OPEN"),
+            (None, "bad-time", "bad-amount", "GBP", None),
+            ("o9", "2026-07-19 11:15:00", "20.25", "EUR", "CANCELLED"),
+        ], "order_id string, ordered_at_raw string, amount_raw string, currency string, status string")}
     if lab_id == "rdd_totals":
         return {"purchases": [("c1", 10), ("c2", 7), ("c1", 5), ("c3", 11), ("c2", 3)]}
     if lab_id == "clean_customers":
         return {"customers": spark.createDataFrame([
-            ("c1", " Alice@Example.COM ", " us ", "yes"),
-            ("c2", "BOB@example.com", "gb", "FALSE"),
-            ("c3", None, " br ", "1"),
-        ], "customer_id string, email string, country string, marketing_opt_in string")}
+            (" c1 ", " Alice ", " Alice@Example.COM ", "+1 (415) 555-0100", '{"marketing_opt_in":true,"language":"en"}', [" VIP ", "vip", "News"]),
+            ("c2", "Bob", "bob@example.com", "020 7946 0958", '{"marketing_opt_in":false,"language":"en"}', ["standard"]),
+            (" ", " ", "not-an-email", "555", "{bad-json}", [" ", None]),
+        ], "customer_id string, name string, email string, phone string, preferences_json string, tags array<string>")}
     if lab_id == "customer_timeline":
         return {"orders": spark.createDataFrame([
             ("o2", "c1", datetime(2026, 7, 18, 11), Decimal("5.00")),
@@ -52,17 +58,23 @@ def build_fixtures(spark: SparkSession, lab_id: str | None) -> dict:
         }
     if lab_id == "parse_events":
         return {"events": spark.createDataFrame([
-            ("e1", '{"event_type":"purchase","user_id":"u1","amount":12.50}'),
+            ("e1", '{"event_type":"purchase","user_id":"u1","amount":12.50,"customer":{"id":"c1"},"items":[{"sku":"s1","quantity":2},{"sku":"s2","quantity":1}],"attributes":{"channel":"web"}}'),
             ("e2", '{not-json}'),
-            ("e3", '{"event_type":"view","user_id":"u2","amount":null}'),
+            ("e3", '{"event_type":"view","user_id":"u2","amount":null,"customer":{"id":"c2"},"items":[],"attributes":{},"unknown_field":"ignored"}'),
         ], "event_id string, payload string")}
     if lab_id == "quality_rules":
         return {"orders": spark.createDataFrame([
-            ("o1", "c1", Decimal("10.00"), "COMPLETE"),
-            ("o1", "c1", Decimal("10.00"), "COMPLETE"),
-            ("o2", None, Decimal("5.00"), "OPEN"),
-            ("o3", "c3", Decimal("-1.00"), "UNKNOWN"),
-        ], "order_id string, customer_id string, amount decimal(12,2), status string")}
+            ("o1", "c1", "10.00", "COMPLETE", datetime(2026, 7, 18, 9)),
+            ("o1", "c1", "10.00", "COMPLETE", datetime(2026, 7, 18, 9)),
+            (" ", "c2", "5.00", "OPEN", datetime(2026, 7, 18, 10)),
+            ("o3", "c3", "bad", "OPEN", datetime(2026, 7, 18, 11)),
+            ("o4", "c4", "-1.00", "OPEN", datetime(2026, 7, 18, 12)),
+            ("o5", "c5", "3.00", "UNKNOWN", datetime(2026, 7, 18, 13)),
+            ("o6", "c6", "4.00", None, datetime(2026, 7, 18, 14)),
+            ("o7", "c7", "7.00", "OPEN", datetime(2026, 6, 1, 9)),
+            (None, "c8", "wrong", None, datetime(2026, 5, 1, 9)),
+            ("o9", "c9", "9.00", "OPEN", datetime(2026, 7, 19, 9)),
+        ], "order_id string, customer_id string, amount_raw string, status string, event_at timestamp")}
     return {}
 
 
@@ -91,8 +103,9 @@ def grade_setup(namespace: dict) -> list[dict]:
     fn = require_function(namespace, "remainder_counts")
     result = fn(namespace["spark"])
     return [
-        test("DataFrame contract", lambda: (assert_dataframe(result), require_columns(result, {"remainder", "count"}))),
-        test("Ten balanced groups", lambda: assert_rows(result, {i: 10 for i in range(10)}, "remainder", "count")),
+        test("DataFrame contract", lambda: (assert_dataframe(result), require_columns(result, {"remainder", "count", "sum"}))),
+        test("Filtered remainder counts", lambda: assert_rows(result, {0: 3, 1: 3, 2: 3, 3: 4, 4: 3, 5: 3, 6: 4, 7: 3, 8: 3, 9: 4}, "remainder", "count")),
+        test("Remainder sums", lambda: assert_rows(result, {0: 180, 1: 153, 2: 126, 3: 192, 4: 162, 5: 135, 6: 204, 7: 171, 8: 144, 9: 216}, "remainder", "sum")),
     ]
 
 
@@ -109,6 +122,8 @@ def grade_daily(namespace: dict) -> list[dict]:
             row = rows[day]
             actual = (row.completed_order_count, row.completed_customer_count, row.revenue, row.average_order_value, row.cancelled_order_count)
             assert actual == wanted, f"Metrics for {day} were {actual}, expected {wanted}."
+        assert abs(float(rows["2026-07-18"].cancellation_rate) - 0.25) < 1e-9, "Cancellation rate for 2026-07-18 must be 0.25."
+        assert abs(float(rows["2026-07-19"].cancellation_rate) - 0.5) < 1e-9, "Cancellation rate for 2026-07-19 must be 0.5."
     return [test("Output columns and grain", lambda: (assert_dataframe(result), require_columns(result, required), assert_count(result, 2))), test("Daily metric values", values), test("Decimal money types", lambda: assert_decimal_columns(result, {"revenue", "average_order_value"}))]
 
 
@@ -116,16 +131,23 @@ def grade_valid(namespace: dict) -> list[dict]:
     fn = require_function(namespace, "validate_orders")
     valid, rejected = fn(namespace["raw_orders"])
     return [
-        test("Two valid rows", lambda: (assert_dataframe(valid), require_columns(valid, {"order_id", "ordered_at", "amount"}), assert_count(valid, 2))),
-        test("Two rejected rows with evidence", lambda: (assert_dataframe(rejected), require_columns(rejected, {"order_id", "ordered_at_raw", "amount_raw", "rejection_reason"}), assert_count(rejected, 2))),
+        test("Two valid rows", lambda: (assert_dataframe(valid), require_columns(valid, {"order_id", "ordered_at", "amount", "currency", "status"}), assert_ids(valid, {"o1", "o9"}), assert_count(valid, 2))),
+        test("Rejected rows retain all evidence", lambda: (assert_dataframe(rejected), require_columns(rejected, {"order_id", "ordered_at_raw", "amount_raw", "currency", "status", "rejection_reasons"}), assert_count(rejected, 8), assert_array_of_strings(rejected, "rejection_reasons"))),
+        test("Multiple failures are preserved", lambda: assert_multiple_reasons(rejected)),
         test("Parsed target types", lambda: assert_types(valid, {"ordered_at": T.TimestampType, "amount": T.DecimalType})),
     ]
 
 
 def grade_rdd(namespace: dict) -> list[dict]:
-    fn = require_function(namespace, "purchase_totals")
-    result = fn(namespace["sc"], namespace["purchases"])
-    return [test("Customer totals", lambda: assert_equal(dict(result.collect()), {"c1": 15, "c2": 10, "c3": 11}, "RDD totals do not match the fixture."))]
+    reduced_fn = require_function(namespace, "purchase_totals")
+    grouped_fn = require_function(namespace, "purchase_totals_grouped")
+    reduced = reduced_fn(namespace["sc"], namespace["purchases"])
+    grouped = grouped_fn(namespace["sc"], namespace["purchases"])
+    expected = {"c1": 15, "c2": 10, "c3": 11}
+    return [
+        test("reduceByKey totals", lambda: assert_equal(dict(reduced.collect()), expected, "reduceByKey totals do not match the fixture.")),
+        test("groupByKey totals", lambda: assert_equal(dict(grouped.collect()), expected, "groupByKey totals do not match the fixture.")),
+    ]
 
 
 def grade_customers(namespace: dict) -> list[dict]:
@@ -133,19 +155,29 @@ def grade_customers(namespace: dict) -> list[dict]:
     result = fn(namespace["customers"])
     def values():
         rows = {row.customer_id: row for row in result.collect()}
-        assert rows["c1"].email == "alice@example.com" and rows["c1"].country == "US", "Trim/lower email and trim/upper country."
-        assert rows["c1"].marketing_opt_in is True and rows["c2"].marketing_opt_in is False and rows["c3"].marketing_opt_in is True, "Normalize yes/1 to true and FALSE to false."
-    return [test("Input grain preserved", lambda: assert_count(result, 3)), test("Normalized field values", values), test("Boolean target type", lambda: assert_types(result, {"marketing_opt_in": T.BooleanType}))]
+        assert rows["c1"].name == "Alice" and rows["c1"].email == "alice@example.com", "Trim names and normalize email."
+        assert rows["c1"].phone == "14155550100", "Normalize phone to digits."
+        assert rows["c1"].tags == ["vip", "news"], "Normalize and deduplicate tags."
+        assert rows["c1"].preferences.marketing_opt_in is True, "Parse the preference JSON struct."
+        assert set(rows[""].quality_flags) == {"missing_customer_id", "invalid_email", "invalid_phone", "invalid_preferences"}, "Expose all quality flags for the invalid row."
+    return [
+        test("Selected output schema and grain", lambda: (require_columns(result, {"customer_id", "name", "email", "phone", "preferences", "tags", "quality_flags"}), assert_count(result, 3))),
+        test("Normalized nested values", values),
+        test("Structured output types", lambda: (assert_types(result, {"preferences": T.StructType, "tags": T.ArrayType, "quality_flags": T.ArrayType}), assert_array_of_strings(result, "quality_flags"))),
+    ]
 
 
 def grade_timeline(namespace: dict) -> list[dict]:
     fn = require_function(namespace, "customer_timeline")
     result = fn(namespace["orders"])
-    required = {"sequence", "previous_ordered_at", "running_spend"}
+    required = {"sequence", "previous_ordered_at", "days_since_previous", "running_spend", "lifetime_spend", "lifetime_share"}
     def values():
         rows = result.filter(F.col("customer_id") == "c1").orderBy("ordered_at", "order_id").collect()
         assert [row.sequence for row in rows] == [1, 2, 3], "c1 sequence must be 1, 2, 3 in timestamp order."
         assert [row.running_spend for row in rows] == [Decimal("10.00"), Decimal("15.00"), Decimal("17.50")], "Running spend values are incorrect."
+        assert [row.lifetime_spend for row in rows] == [Decimal("17.50")] * 3, "Lifetime spend must use the full customer partition."
+        assert rows[0].days_since_previous is None and rows[1].days_since_previous == 0 and rows[2].days_since_previous == 1, "Days since previous order are incorrect."
+        assert abs(float(rows[-1].lifetime_share) - 1.0) < 1e-9, "The final order must reach a lifetime share of 1.0."
         assert rows[0].previous_ordered_at is None and rows[1].previous_ordered_at == rows[0].ordered_at, "Previous timestamp must use lag within each customer."
     return [test("Window columns", lambda: require_columns(result, required)), test("Customer timeline values", values), test("Detail grain preserved", lambda: assert_count(result, 4))]
 
@@ -162,25 +194,40 @@ def grade_reconcile(namespace: dict) -> list[dict]:
 
 def grade_events(namespace: dict) -> list[dict]:
     fn = require_function(namespace, "parse_events")
-    valid, malformed = fn(namespace["events"])
+    valid, items, malformed = fn(namespace["events"])
     return [
-        test("Two valid events", lambda: (require_columns(valid, {"event_id", "event_type", "user_id", "amount"}), assert_count(valid, 2))),
-        test("Malformed payload retained", lambda: (require_columns(malformed, {"event_id", "payload"}), assert_ids(malformed, {"e2"}, "event_id"))),
+        test("Two accepted event rows", lambda: (require_columns(valid, {"event_id", "event_type", "user_id", "amount", "customer", "items", "attributes"}), assert_ids(valid, {"e1", "e3"}, "event_id"), assert_count(valid, 2))),
+        test("Item grain includes empty arrays", lambda: (require_columns(items, {"event_id", "sku", "quantity"}), assert_count(items, 3), assert_empty_item_row(items))),
+        test("Rejected payload retains reasons", lambda: (require_columns(malformed, {"event_id", "payload", "rejection_reasons"}), assert_ids(malformed, {"e2"}, "event_id"), assert_array_of_strings(malformed, "rejection_reasons"))),
         test("Decimal amount type", lambda: assert_types(valid, {"amount": T.DecimalType})),
     ]
 
 
 def grade_quality(namespace: dict) -> list[dict]:
     fn = require_function(namespace, "evaluate_quality")
-    result = fn(namespace["orders"])
-    required = {"total_count", "missing_customer_count", "invalid_amount_count", "invalid_status_count", "duplicate_order_count", "valid_rate"}
-    def values():
-        row = result.first()
-        assert row.total_count == 4, "total_count must be 4."
-        assert row.missing_customer_count == 1 and row.invalid_amount_count == 1 and row.invalid_status_count == 1, "Required-field, amount, or status counts are incorrect."
-        assert row.duplicate_order_count == 1, "Count one extra occurrence of the duplicated order_id."
-        assert 0 <= float(row.valid_rate) <= 1, "valid_rate must be a ratio between 0 and 1."
-    return [test("One-row metric contract", lambda: (require_columns(result, required), assert_count(result, 1))), test("Quality metric values", values)]
+    valid, rejected, rule_counts = fn(namespace["orders"])
+    expected_rules = {"missing_key": 2, "malformed_amount": 2, "negative_amount": 1, "invalid_status": 3, "stale_data": 2, "duplicate_key": 2}
+    valid_rows = valid.collect()
+    rejected_rows = rejected.collect()
+    actual_rules = {row["rule"]: row["count"] for row in rule_counts.select("rule", "count").collect()}
+
+    def routing() -> None:
+        assert len(valid_rows) == 1 and valid_rows[0]["order_id"] == "o9", "Only o9 should pass every quality rule."
+        assert len(rejected_rows) == 9, f"Expected 9 rejected rows, found {len(rejected_rows)}."
+
+    def evidence() -> None:
+        require_columns(rejected, {"order_id", "amount_raw", "status", "event_at", "quality_failures"})
+        assert_array_of_strings(rejected, "quality_failures")
+        row = next((row for row in rejected_rows if row["order_id"] is None), None)
+        expected = {"missing_key", "malformed_amount", "invalid_status", "stale_data"}
+        assert row is not None and set(row["quality_failures"]) == expected, "The multi-failure row must retain all four applicable rules."
+
+    return [
+        test("Valid and rejected outputs are exhaustive", routing),
+        test("Rejected rows retain all failures", evidence),
+        test("Aggregate counts by named rule", lambda: assert_equal(actual_rules, expected_rules, "Rule counts do not match the fixture.")),
+        test("Valid amount has a decimal type", lambda: assert_types(valid, {"amount": T.DecimalType})),
+    ]
 
 
 GRADERS = {
@@ -250,3 +297,19 @@ def assert_changed_evidence(dataframe: DataFrame) -> None:
     source_evidence = any("source" in name.lower() or name.lower().endswith("_left") for name in columns)
     target_evidence = any("target" in name.lower() or name.lower().endswith("_right") for name in columns)
     assert source_evidence and target_evidence, "Changed rows must retain clearly named source and target values."
+
+
+def assert_array_of_strings(dataframe: DataFrame, column: str) -> None:
+    field = next((field for field in dataframe.schema.fields if field.name == column), None)
+    assert field is not None, f"Missing column: {column}."
+    assert isinstance(field.dataType, T.ArrayType) and isinstance(field.dataType.elementType, T.StringType), f"{column} must be array<string>."
+
+
+def assert_multiple_reasons(dataframe: DataFrame) -> None:
+    row = dataframe.where(F.col("order_id").isNull()).select("rejection_reasons").first()
+    assert row is not None and len(row.rejection_reasons) >= 4, "The multi-failure fixture row must retain every rejection reason."
+
+
+def assert_empty_item_row(dataframe: DataFrame) -> None:
+    row = dataframe.where(F.col("event_id") == "e3").first()
+    assert row is not None and row.sku is None and row.quantity is None, "explode_outer must preserve the empty-item event with null item fields."

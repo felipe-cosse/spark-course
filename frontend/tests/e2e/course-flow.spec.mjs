@@ -44,16 +44,36 @@ test("reveals a reference solution and completes a rubric-based answer check", a
   await expect(page.getByRole("heading", { name: "Reference solution" })).toBeVisible();
   await expect(page.getByText(/distributed execution.*schemas and types/i)).toBeVisible();
 
+  await page.getByRole("button", { name: "Notebook notes" }).click();
+  await page.getByLabel("Exercise notebook notes").fill(
+    "My dependency map links execution, schemas, DataFrames, joins, and production evidence.",
+  );
   await page.getByRole("button", { name: "Check answer" }).click();
   const checks = page.getByRole("checkbox");
-  await expect(checks).toHaveCount(3);
-  for (let index = 0; index < 3; index += 1) await checks.nth(index).check();
+  const checkCount = await checks.count();
+  expect(checkCount).toBeGreaterThan(0);
+  for (let index = 0; index < checkCount; index += 1) await checks.nth(index).check();
 
-  const confirm = page.getByRole("button", { name: "Confirm answer meets criteria" });
+  const confirm = page.getByRole("button", { name: "Confirm evidence meets criteria" });
   await expect(confirm).toBeEnabled();
   await confirm.click();
-  await expect(page.getByText("Self-review complete")).toBeVisible();
+  await expect(page.getByText("Guided review complete")).toBeVisible();
   await expect(page.getByText("Exercise completed")).toBeVisible();
+});
+
+test("requires recorded evidence before an open-ended exercise can pass", async ({ page }) => {
+  await page.getByRole("button", { name: "Continue to example" }).click();
+  await page.getByRole("button", { name: "Review key terms" }).click();
+  await page.getByRole("button", { name: "Continue to exercises" }).click();
+
+  await page.getByRole("button", { name: "Check answer" }).click();
+  await expect(page.getByText(/Record an attempt first/)).toBeVisible();
+
+  const checks = page.getByRole("checkbox");
+  const checkCount = await checks.count();
+  for (let index = 0; index < checkCount; index += 1) await checks.nth(index).check();
+  await expect(page.getByRole("button", { name: "Confirm evidence meets criteria" })).toBeDisabled();
+  await expect(page.getByText("Exercise completed")).not.toBeVisible();
 });
 
 test("skips an exercise and advances to the next unresolved task", async ({ page }) => {
