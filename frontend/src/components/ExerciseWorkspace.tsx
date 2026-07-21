@@ -10,6 +10,7 @@ import {
   Circle,
   Eye,
   EyeOff,
+  FileText,
   FlaskConical,
   Lightbulb,
   ListChecks,
@@ -20,6 +21,7 @@ import {
   Terminal,
 } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
+import { exerciseModeFor } from "../data/exerciseModes";
 import { labFor } from "../data/labs";
 import { solutionFor } from "../data/solutions";
 import { executeSpark } from "../lib/api";
@@ -30,6 +32,12 @@ import { MarkdownContent } from "./MarkdownContent";
 
 type FeedbackTab = "output" | "tests" | "plan";
 type WorkspaceMode = "code" | "notes";
+
+function workspaceModeForExercise(sourcePath: string, exerciseNumber: number): WorkspaceMode {
+  return labFor(sourcePath, exerciseNumber) || exerciseModeFor(sourcePath, exerciseNumber) === "code"
+    ? "code"
+    : "notes";
+}
 
 interface ExerciseWorkspaceProps {
   item: CourseItem;
@@ -75,7 +83,9 @@ export function ExerciseWorkspace({
 }: ExerciseWorkspaceProps) {
   const exercises = useMemo(() => parseExercises(item.exerciseMarkdown), [item.exerciseMarkdown]);
   const [selectedIndex, setSelectedIndex] = useState(0);
-  const [workspaceMode, setWorkspaceMode] = useState<WorkspaceMode>("code");
+  const [workspaceMode, setWorkspaceMode] = useState<WorkspaceMode>(() => (
+    workspaceModeForExercise(item.sourcePath, exercises[0]?.number ?? 1)
+  ));
   const [feedbackTab, setFeedbackTab] = useState<FeedbackTab>("output");
   const [result, setResult] = useState<RunResult | null>(null);
   const [running, setRunning] = useState(false);
@@ -87,15 +97,18 @@ export function ExerciseWorkspace({
 
   useEffect(() => {
     setSelectedIndex(0);
+    setWorkspaceMode(workspaceModeForExercise(item.sourcePath, exercises[0]?.number ?? 1));
+    setFeedbackTab("output");
     setResult(null);
     setHintOpen(false);
     setSolutionOpen(false);
     setSelfReviewOpen(false);
-  }, [item.id]);
+  }, [exercises, item.id, item.sourcePath]);
 
   const selected = exercises[selectedIndex] ?? { number: 1, title: "Practice", body: item.exerciseMarkdown };
   const exerciseId = `${item.id}-exercise-${selected.number}`;
   const lab = labFor(item.sourcePath, selected.number);
+  const isCodeExercise = workspaceModeForExercise(item.sourcePath, selected.number) === "code";
   const draftKey = lab?.id ?? exerciseId;
   const starterCode = lab?.starter ?? genericStarter;
   const code = codeDrafts[draftKey] ?? starterCode;
@@ -109,12 +122,13 @@ export function ExerciseWorkspace({
   const selectedChecks = reviewChecks[exerciseId] ?? criteria.map(() => false);
   const allReviewChecksPassed = criteria.length > 0 && selectedChecks.every(Boolean);
   const hasWrittenEvidence = notes.trim().length >= 40;
-  const hasCodeEvidence = (
+  const hasCodeEvidence = isCodeExercise && (
     code.trim() !== starterCode.trim()
     && !code.includes("# Replace this preview with your solution.")
     && code.replace(/^\s*#.*$/gm, "").trim().length >= 60
   );
   const hasAttempt = hasWrittenEvidence || hasCodeEvidence;
+  const activeFeedbackTab: FeedbackTab = isCodeExercise ? feedbackTab : "tests";
   const allResolved = exercises.length > 0 && exercises.every((exercise) => {
     const id = `${item.id}-exercise-${exercise.number}`;
     return progress.completedExerciseIds.includes(id) || progress.skippedExerciseIds.includes(id);
@@ -122,11 +136,18 @@ export function ExerciseWorkspace({
 
   const selectExercise = (index: number) => {
     setSelectedIndex(index);
+    setWorkspaceMode(workspaceModeForExercise(item.sourcePath, exercises[index]?.number ?? 1));
+    setFeedbackTab("output");
     setResult(null);
     setHintOpen(false);
     setSolutionOpen(false);
     setSelfReviewOpen(false);
     setRequestError("");
+  };
+
+  const updateNotes = (value: string) => {
+    onDraft("noteDrafts", exerciseId, value);
+    if (!isCodeExercise) onExerciseDone(exerciseId, value.trim().length > 0);
   };
 
   const advanceToNextUnresolved = () => {
@@ -196,7 +217,7 @@ export function ExerciseWorkspace({
   };
 
   const resetExercise = () => {
-    onDraft("codeDrafts", draftKey, starterCode);
+    if (isCodeExercise) onDraft("codeDrafts", draftKey, starterCode);
     onDraft("noteDrafts", exerciseId, "");
     onExerciseDone(exerciseId, false);
     onExerciseSkipped(exerciseId, false);
@@ -271,14 +292,18 @@ export function ExerciseWorkspace({
 
         <section className="workspace-panel">
           <div className="workspace-toolbar">
-            <div className="segmented-control" aria-label="Workspace type">
-              <button className={workspaceMode === "code" ? "active" : ""} onClick={() => setWorkspaceMode("code")}>Spark code</button>
-              <button className={workspaceMode === "notes" ? "active" : ""} onClick={() => setWorkspaceMode("notes")}>Notebook notes</button>
-            </div>
+            {isCodeExercise ? (
+              <div className="segmented-control" aria-label="Workspace type">
+                <button className={workspaceMode === "code" ? "active" : ""} onClick={() => setWorkspaceMode("code")}>Spark code</button>
+                <button className={workspaceMode === "notes" ? "active" : ""} onClick={() => setWorkspaceMode("notes")}>Notebook notes</button>
+              </div>
+            ) : (
+              <div className="notes-workspace-label"><FileText size={15} /> Notebook notes</div>
+            )}
             <span className="autosave-state">Saved in this browser</span>
           </div>
 
-          {workspaceMode === "code" ? (
+          {isCodeExercise && workspaceMode === "code" ? (
             <CodeMirror
               aria-label="PySpark exercise editor"
               className="spark-editor"
@@ -293,42 +318,52 @@ export function ExerciseWorkspace({
               className="notes-editor"
               aria-label="Exercise notebook notes"
               value={notes}
-              onChange={(event) => onDraft("noteDrafts", exerciseId, event.target.value)}
-              placeholder="Write your grain, assumptions, expected result, evidence, and trade-offs here…"
+              onChange={(event) => updateNotes(event.target.value)}
+              placeholder={isCodeExercise
+                ? "Write your grain, assumptions, expected result, evidence, and trade-offs here…"
+                : "Write your answer here. This exercise is completed automatically when you add a response."}
             />
           )}
 
           <div className="workspace-actions">
             <div>
-              <button className="secondary-button" onClick={() => runCode("run")} disabled={running || runnerOnline !== true}>
-                {running ? <LoaderCircle className="spin" size={16} /> : <Play size={16} />} Run code
-              </button>
+              {isCodeExercise && (
+                <button className="secondary-button" onClick={() => runCode("run")} disabled={running || runnerOnline !== true}>
+                  {running ? <LoaderCircle className="spin" size={16} /> : <Play size={16} />} Run code
+                </button>
+              )}
               <button className="primary-button" onClick={checkAnswer} disabled={running || Boolean(lab && runnerOnline !== true)}>
                 <FlaskConical size={16} /> Check answer
               </button>
             </div>
             <button className="text-button" onClick={resetExercise}><RotateCcw size={15} /> Reset exercise</button>
           </div>
-          {runnerOnline === false && (
+          {isCodeExercise && runnerOnline === false && (
             <p className="runner-help">Spark execution is offline. Reference solutions and rubric reviews still work; start the complete course with <code>make up</code> to run code and use automatic lab tests.</p>
           )}
         </section>
 
         <section className="feedback-panel" aria-live="polite">
-          <div className="feedback-tabs">
-            <button className={feedbackTab === "output" ? "active" : ""} onClick={() => setFeedbackTab("output")}><Terminal size={15} /> Output</button>
-            <button className={feedbackTab === "tests" ? "active" : ""} onClick={() => setFeedbackTab("tests")}><FlaskConical size={15} /> {lab ? "Tests" : "Review"}</button>
-            <button className={feedbackTab === "plan" ? "active" : ""} onClick={() => setFeedbackTab("plan")}><ListChecks size={15} /> Plan</button>
-          </div>
+          {isCodeExercise ? (
+            <div className="feedback-tabs">
+              <button className={feedbackTab === "output" ? "active" : ""} onClick={() => setFeedbackTab("output")}><Terminal size={15} /> Output</button>
+              <button className={feedbackTab === "tests" ? "active" : ""} onClick={() => setFeedbackTab("tests")}><FlaskConical size={15} /> {lab ? "Tests" : "Review"}</button>
+              <button className={feedbackTab === "plan" ? "active" : ""} onClick={() => setFeedbackTab("plan")}><ListChecks size={15} /> Plan</button>
+            </div>
+          ) : (
+            <div className="feedback-heading"><FlaskConical size={15} /> Guided review</div>
+          )}
           <div className="feedback-body">
-            {requestError ? <div className="error-message">{requestError}</div> : feedbackTab === "tests" ? (
+            {requestError ? <div className="error-message">{requestError}</div> : activeFeedbackTab === "tests" ? (
               !lab && done ? (
-                <div className="review-passed"><CheckCircle2 size={18} /><div><strong>Guided review complete</strong><span>Your recorded evidence addresses every exercise-specific criterion.</span></div></div>
+                <div className="review-passed"><CheckCircle2 size={18} /><div><strong>{isCodeExercise ? "Guided review complete" : "Response saved"}</strong><span>{isCodeExercise ? "Your recorded evidence addresses every exercise-specific criterion." : "Writing in Notebook notes automatically completed this exercise."}</span></div></div>
               ) : !lab && selfReviewOpen ? (
                 <div className="self-review">
-                  <p>Compare your attempt with the reference solution, then confirm each criterion using evidence in your code or notebook notes.</p>
+                  <p>Compare your attempt with the reference solution, then confirm each criterion using evidence in your {isCodeExercise ? "code or notebook notes" : "Notebook notes"}.</p>
                   {!hasAttempt && (
-                    <div className="error-message">Record an attempt first: write at least 40 characters of notes, or replace the preview code with a substantive answer.</div>
+                    <div className="error-message">{isCodeExercise
+                      ? "Record an attempt first: write at least 40 characters of notes, or replace the preview code with a substantive answer."
+                      : "Write something in Notebook notes to complete this exercise."}</div>
                   )}
                   <div className="review-checklist">
                     {criteria.map((criterion, index) => (
@@ -352,7 +387,7 @@ export function ExerciseWorkspace({
                   ))}
                 </ul>
               ) : <p>{lab ? "Choose Check answer to run the task-specific tests." : "Record an attempt, then choose Check answer to compare it with the reference solution and complete the guided review."}</p>
-            ) : feedbackTab === "plan" ? (
+            ) : activeFeedbackTab === "plan" ? (
               <pre>{result?.plan || "Run a DataFrame assigned to result to inspect its formatted physical plan."}</pre>
             ) : (
               <pre>{result ? [result.stdout, result.stderr].filter(Boolean).join("\n") || "Code completed without printed output." : "Run the code to see stdout and a small DataFrame preview."}</pre>

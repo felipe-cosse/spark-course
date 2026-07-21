@@ -64,8 +64,9 @@ Every lesson follows the same sequence:
 
 The exercise workspace provides:
 
-- a Python-aware code editor connected to an active local `SparkSession`;
-- a notebook-notes area for assumptions, grain, trade-offs, and written designs;
+- a Python-aware code editor connected to an active local `SparkSession` for implementation exercises;
+- Notebook notes that open by default and complete analysis, design, review, and documentation exercises as soon as the learner writes a response;
+- optional notebook notes beside code exercises for assumptions, grain, and trade-offs;
 - stdout and bounded DataFrame previews;
 - formatted Spark physical plans;
 - exercise-specific tests where an automatic grader is available;
